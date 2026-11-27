@@ -3375,8 +3375,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             openSheet();
             return;
         }
-        if (it.kind == HomeApps.INPUTS) {
-            openInputs();
+        if (it.kind == HomeApps.INPUTS) {   // a popover over the home screen, which stays where it is
+            try {
+                activity.startActivity(new Intent(activity, QuickPanelActivity.class)
+                        .putExtra(QuickPanelActivity.EXTRA_INPUTS, true));
+            } catch (RuntimeException e) {
+                AppLog.w("inputs popover: " + e);
+                openInputs();
+            }
             return;
         }
         boolean opened = HomeApps.open(activity, it, this, Math.round(r.left), Math.round(r.top),

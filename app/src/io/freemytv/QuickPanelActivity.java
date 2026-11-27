@@ -52,10 +52,17 @@ public class QuickPanelActivity extends Activity {
         }
     }
 
+    /**
+     * The home screen's HDMI button: only the Inputs list, as a small popover under the top-right buttons, so nothing
+     * on the home screen moves. Back closes it.
+     */
+    static final String EXTRA_INPUTS = "io.freemytv.extra.INPUTS_ONLY";
     private static final String TV_SETTINGS = "com.android.tv.settings";
     private static final int INPUTS = 0;
     /** The panel in a 1920×1080 space: its size and the margin to the screen's corner. */
     private static final float W = 600, H = 800, MARGIN = 40;
+    /** The popover: its width, and where it sits, just under the home screen's top-right buttons. */
+    private static final float POP_W = 520, POP_RIGHT = 76, POP_TOP = 196;
 
     private PanelView view;
     private Click click;
@@ -66,16 +73,28 @@ public class QuickPanelActivity extends Activity {
         click = new Click(this);
         DisplayMetrics dm = getResources().getDisplayMetrics();
         float k = dm.widthPixels / 1920f;
+        boolean only = getIntent().getBooleanExtra(EXTRA_INPUTS, false);
+        List<HomeApps.Item> inputs = only ? HomeApps.orderedInputs(this) : null;
         WindowManager.LayoutParams lp = getWindow().getAttributes();
-        lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = Math.round(MARGIN * k);
-        lp.y = Math.round(MARGIN * k);
-        lp.width = Math.round(W * k);
-        lp.height = Math.round(H * k);
+        if (only) {
+            int rows = Math.max(1, Math.min(inputs.size(), PanelView.ROWS_VISIBLE));
+            lp.gravity = Gravity.TOP | Gravity.END;
+            lp.x = Math.round(POP_RIGHT * k);
+            lp.y = Math.round(POP_TOP * k);
+            lp.width = Math.round(POP_W * k);
+            lp.height = Math.round((2 * PanelView.POP_INSET + rows * (PanelView.ROW_H + PanelView.ROW_GAP)
+                    - PanelView.ROW_GAP) * k);
+        } else {
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.x = Math.round(MARGIN * k);
+            lp.y = Math.round(MARGIN * k);
+            lp.width = Math.round(W * k);
+            lp.height = Math.round(H * k);
+        }
         getWindow().setAttributes(lp);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         overridePendingTransition(0, 0);   // the panel springs in by itself
-        view = new PanelView(this, k, tiles());
+        view = new PanelView(this, k, tiles(), inputs);
         setContentView(view);
     }
 
@@ -148,12 +167,16 @@ public class QuickPanelActivity extends Activity {
     private final class PanelView extends View {
         private static final float PAD = 40, GAP = 14, TILE_H = 132, GRID_TOP = 184, ROW_H = 76, ROW_GAP = 10,
                 CARD_R = 46, TILE_R = 30, CHIP_R = 25, SYMBOL = 24;
+        /** The popover: no clock and no title (the HDMI button's label above it says what it is), a slim inset. */
+        private static final float POP_INSET = 22, POP_CARD_R = 46;   // concentric: the rows' 24 + the inset; the lens glow (21) fits inside
         private static final int ROWS_VISIBLE = 6;
         /** TalkBack's ids: a tile is its index + 1, an Inputs row ROW_IDS + its index + 1. */
         private static final int ROW_IDS = 1000;
 
         private final float k;
         private final Tile[] tiles;
+        private final boolean inputsOnly;   // the HDMI button's popover: no clock, no tiles, no title
+        private final float inset, cardR, rowsTop;
         private List<HomeApps.Item> inputs;   // non-null: the Inputs list is showing (or fading out)
         private boolean inputsOpen, closing;
         private int focus, inputFocus;
@@ -205,10 +228,20 @@ public class QuickPanelActivity extends Activity {
             }
         };
 
-        PanelView(Context c, float k, Tile[] tiles) {
+        PanelView(Context c, float k, Tile[] tiles, List<HomeApps.Item> only) {
             super(c);
             this.k = k;
             this.tiles = tiles;
+            inputsOnly = only != null;
+            inset = inputsOnly ? POP_INSET : PAD;
+            cardR = inputsOnly ? POP_CARD_R : CARD_R;
+            rowsTop = inputsOnly ? POP_INSET : GRID_TOP + 58;
+            if (inputsOnly) {
+                inputs = only;
+                inputsOpen = true;
+                inputFocus = startRow(only);
+                page.snap(1);
+            }
             night = HomeData.get(c).isNight(System.currentTimeMillis());
             ink = night ? 0xFFFFFFFF : 0xFF1D1D1F;
             focusInk = night ? 0xFF1D1D1F : 0xFFFFFFFF;
@@ -247,7 +280,7 @@ public class QuickPanelActivity extends Activity {
                     int i = id - ROW_IDS - 1;
                     if (!inputsOpen || i >= inputs.size()) return false;
                     float y = rowTop(i);
-                    out.set(Math.round(PAD * k), Math.round(y), Math.round(getWidth() - PAD * k), Math.round(y + ROW_H * k));
+                    out.set(Math.round(inset * k), Math.round(y), Math.round(getWidth() - inset * k), Math.round(y + ROW_H * k));
                     return true;
                 }
                 @Override public int focused() { return inputsOpen ? ROW_IDS + inputFocus + 1 : focus + 1; }
@@ -324,9 +357,9 @@ public class QuickPanelActivity extends Activity {
         private void aimLens(boolean snap) {
             float x, y, w, h;
             if (inputsOpen) {
-                x = PAD * k;
+                x = inset * k;
                 y = rowTop(inputFocus);
-                w = getWidth() - 2 * PAD * k;
+                w = getWidth() - 2 * inset * k;
                 h = ROW_H * k;
             } else {
                 x = tileX[focus];
@@ -347,13 +380,21 @@ public class QuickPanelActivity extends Activity {
             }
         }
 
+        /** Where the popover's focus starts: the Live TV button's input, else the first one with a signal. */
+        private int startRow(List<HomeApps.Item> list) {
+            String live = Prefs.liveButton();
+            for (int i = 0; i < list.size(); i++) if (!live.isEmpty() && live.equals(list.get(i).inputId)) return i;
+            for (int i = 0; i < list.size(); i++) if (list.get(i).connected && list.get(i).kind != HomeApps.LIVE_TV) return i;
+            return 0;
+        }
+
         /** The first Inputs row on screen: the list scrolls to keep the focused one in view. */
         private int firstRow() {
             return Math.max(0, Math.min(inputFocus - ROWS_VISIBLE + 1, inputs == null ? 0 : inputs.size() - ROWS_VISIBLE));
         }
 
         private float rowTop(int i) {
-            return (GRID_TOP + 58) * k + (i - firstRow()) * (ROW_H + ROW_GAP) * k;
+            return rowsTop * k + (i - firstRow()) * (ROW_H + ROW_GAP) * k;
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -371,11 +412,12 @@ public class QuickPanelActivity extends Activity {
 
             float s = Math.max(0, show.value);
             c.save();
-            c.translate(-(1 - s) * (getWidth() + MARGIN * k), 0);
+            if (inputsOnly) c.translate(0, -(1 - s) * 24 * k);   // the popover drops in from its button
+            else c.translate(-(1 - s) * (getWidth() + MARGIN * k), 0);
             int alpha = Math.round(255 * Math.min(1, s * 1.4f));
             c.saveLayerAlpha(card, alpha);
             drawGlass(c);
-            drawHeader(c);
+            if (!inputsOnly) drawHeader(c);
             float p = page.value;
             if (p < 0.999f) drawTiles(c, 1 - p);
             if (inputs != null && p > 0.001f) drawInputs(c, p);
@@ -390,7 +432,7 @@ public class QuickPanelActivity extends Activity {
 
         /** Tinted glass with faint light inside, a sheen at the top and a bright rim. */
         private void drawGlass(Canvas c) {
-            float r = CARD_R * k;
+            float r = cardR * k;
             c.saveLayer(card, layer);
             fill.setAlpha(255);   // a shader is still scaled by the paint's alpha, which the last tile left low
             fill.setShader(tint);
@@ -454,18 +496,18 @@ public class QuickPanelActivity extends Activity {
         private void drawInputs(Canvas c, float a) {
             int saved = c.saveLayerAlpha(card, Math.round(255 * a));
             c.translate(0, (1 - a) * 24 * k);
-            c.drawText(inputsTitle, PAD * k, (GRID_TOP + 30) * k, title);
+            if (!inputsOnly) c.drawText(inputsTitle, PAD * k, (GRID_TOP + 30) * k, title);
             if (inputs.isEmpty()) {
-                c.drawText(noInputs, PAD * k, (GRID_TOP + 100) * k, empty);
+                c.drawText(noInputs, inset * k, (rowsTop + 42) * k, empty);
                 c.restoreToCount(saved);
                 return;
             }
-            float r = 24 * k, w = getWidth() - 2 * PAD * k;
+            float r = 24 * k, w = getWidth() - 2 * inset * k;
             int first = firstRow();
             int last = Math.min(inputs.size(), first + ROWS_VISIBLE);
             for (int i = first; i < last; i++) {
                 float y = rowTop(i);
-                rect.set(PAD * k, y, PAD * k + w, y + ROW_H * k);
+                rect.set(inset * k, y, inset * k + w, y + ROW_H * k);
                 fill.setColor(tileFill);
                 c.drawRoundRect(rect, r, r, fill);
                 drawRim(c, rect, r);
@@ -474,12 +516,12 @@ public class QuickPanelActivity extends Activity {
             for (int i = first; i < last; i++) {
                 HomeApps.Item it = inputs.get(i);
                 float y = rowTop(i);
-                float on = nearness(PAD * k, y, w);
+                float on = nearness(inset * k, y, w);
                 float dim = it.connected ? 1 : 0.7f;   // still 4.5:1 on the light glass
-                drawChip(c, PAD * k + 46 * k, y + ROW_H * k / 2, it.kind == HomeApps.LIVE_TV ? 0xFFFF9F0A : 0xFF30B0C7,
+                drawChip(c, inset * k + 46 * k, y + ROW_H * k / 2, it.kind == HomeApps.LIVE_TV ? 0xFFFF9F0A : 0xFF30B0C7,
                         it.symbol != null ? it.symbol : "hdmi", on);
                 rowLabel.setColor(Ui.alpha(mix(ink, focusInk, on), Math.max(dim, on)));
-                c.drawText(it.label, PAD * k + 92 * k, y + ROW_H * k / 2 + Ui.halfCap(rowLabel), rowLabel);
+                c.drawText(it.label, inset * k + 92 * k, y + ROW_H * k / 2 + Ui.halfCap(rowLabel), rowLabel);
             }
             c.restoreToCount(saved);
         }
@@ -564,7 +606,7 @@ public class QuickPanelActivity extends Activity {
             switch (code) {
                 case KeyEvent.KEYCODE_BACK:
                     if (!down) {
-                        if (inputsOpen) {
+                        if (inputsOpen && !inputsOnly) {
                             inputsOpen = false;
                             page.target = 0;
                             aimLens(false);
