@@ -9,7 +9,7 @@
 // Injected keys skip accessibility key filters (RemoteKeys), so the remote's app buttons can't be tested here.
 import { execFileSync } from "node:child_process";
 import { connect } from "node:net";
-import { mkdirSync, existsSync, copyFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, copyFileSync, writeFileSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -23,6 +23,9 @@ const HOME = "io.freemytv/.HomeActivity";
 const PANEL = "io.freemytv/.QuickPanelActivity";
 const SETTINGS = "io.freemytv/.SettingsActivity";
 const WHO = "io.freemytv/.WhoActivity";
+const TITLE = "io.freemytv/.TitleActivity";
+// What changes every hour (the sidebar build's page: the banner, the rows' films): looked at, not compared.
+const ANY = "any";
 
 // Regions that change by themselves (1920×1080): left out of every comparison.
 const CLOCK_WEATHER = { x1: 60, y1: 290, x2: 1100, y2: 720 };      // date, clock, weather, prices
@@ -34,7 +37,33 @@ const WATCHING = { x1: 60, y1: 240, x2: 1860, y2: 680 };            // Continue 
 const TOP = ["DPAD_UP", "DPAD_UP", "DPAD_UP", ...Array(6).fill("DPAD_RIGHT")];
 const LIVE = ["HOME", ...TOP, "DPAD_LEFT", "DPAD_LEFT"];
 const HOME_MASK = [CLOCK_WEATHER, WATCHING];
-const STEPS = [
+// The sidebar build (sidebar=true): one scrolling page. Its films change every hour, so these steps check that each
+// screen comes and that nothing crashes (the log, after the walk), and keep the screenshots for a look.
+const PAGE_STEPS = [
+  { name: "page-top", keys: ["HOME"], expect: HOME, mask: ANY },
+  { name: "page-rows", keys: ["DPAD_DOWN", "DPAD_DOWN"], expect: HOME, mask: ANY },
+  // The focus rests on a poster, goes on and comes back: its details are fetched ahead, then found cached (the crash
+  // of 2026-11-27 was there).
+  { name: "page-poster-dwell", keys: ["DPAD_RIGHT"], wait: 900, expect: HOME, mask: ANY },
+  { name: "page-poster-back", keys: ["DPAD_LEFT"], wait: 900, expect: HOME, mask: ANY },
+  { name: "title-page", keys: ["DPAD_CENTER"], wait: 2500, expect: TITLE, mask: ANY },
+  { name: "title-closed", keys: ["BACK"], expect: HOME, mask: ANY },
+  { name: "sidebar", keys: ["DPAD_LEFT"], expect: PANEL, mask: ANY },
+  { name: "sidebar-inputs", keys: ["DPAD_DOWN", "DPAD_DOWN", "DPAD_DOWN", "DPAD_CENTER"], expect: PANEL, mask: ANY },
+  { name: "sidebar-closed", keys: ["BACK", "BACK"], expect: HOME, mask: ANY },
+  { name: "who-from-sidebar", keys: ["DPAD_LEFT", "DPAD_UP", "DPAD_UP", "DPAD_UP", "DPAD_CENTER"], expect: WHO, mask: ANY },
+  { name: "who-closed", keys: ["BACK"], expect: HOME, mask: ANY },
+];
+// The build's own setting decides (config.properties, sidebar=true); PAGE=1 or PAGE=0 overrides it.
+const configured = (() => {
+  try {
+    return /^sidebar=true$/m.test(readFileSync(join(here, "../../config.properties"), "utf8"));
+  } catch {
+    return false;
+  }
+})();
+const PAGE = process.env.PAGE ? process.env.PAGE === "1" : configured;
+const CLASSIC_STEPS = [
   { name: "home", keys: ["HOME"], expect: HOME, mask: HOME_MASK },
   { name: "top-live-focus", keys: LIVE.slice(1), expect: HOME, mask: HOME_MASK },
   { name: "hdmi-focus", keys: ["DPAD_RIGHT"], expect: HOME, mask: HOME_MASK },
@@ -47,6 +76,7 @@ const STEPS = [
   { name: "who-manage", keys: ["DPAD_DOWN", "DPAD_CENTER"], expect: WHO },
   { name: "who-closed", keys: ["BACK", "BACK"], expect: HOME, mask: HOME_MASK },
 ];
+const STEPS = PAGE ? PAGE_STEPS : CLASSIC_STEPS;
 const SETTLE_MS = 700;   // the springs' longest move, after the screen is in front
 
 function adb(...args) {
@@ -132,9 +162,11 @@ async function main() {
   mkdirSync(goldens, { recursive: true });
   mkdirSync(run, { recursive: true });
   const results = [];
+  shell("logcat -c");   // the walk's own crashes only
 
   for (const s of STEPS) {
     await keys(s.keys);
+    if (s.wait) await sleep(s.wait);
     const now = await waitFor(s.expect);
     const actual = join(run, `${s.name}.png`);
     screenshot(actual);
@@ -147,7 +179,9 @@ async function main() {
       break;   // the walk is off its path: every next step would press keys on the wrong screen
     }
     const golden = join(goldens, `${s.name}.png`);
-    if (update || !existsSync(golden)) {
+    if (s.mask === ANY) {
+      r.status = "seen";
+    } else if (update || !existsSync(golden)) {
       copyFileSync(actual, golden);
       r.status = update ? "approved" : "new golden";
     } else {
@@ -163,9 +197,14 @@ async function main() {
   // background and would reopen where the walk left it).
   for (let i = 0; i < 6 && front() !== HOME; i++) await keys(["BACK"]), await sleep(300);
 
-  // Jank and memory: the shelf scrolled right and back, twice, on the home screen (its own process, :home).
+  // Jank and memory: the shelf scrolled right and back, twice, on the home screen (its own process, :home). The page:
+  // down to the first row of posters, then the same along it (the banner's own fades are its own case).
   await keys(["HOME"]);
   await waitFor(HOME);
+  if (PAGE) {
+    await keys(["DPAD_DOWN", "DPAD_DOWN"]);
+    await sleep(1200);
+  }
   shell("dumpsys gfxinfo io.freemytv:home reset");
   for (let i = 0; i < 2; i++) {
     for (const k of ["DPAD_RIGHT", "DPAD_LEFT"]) {
@@ -186,6 +225,9 @@ async function main() {
   stopMonkey();
   shell(`rm -f ${SHOT}`);
 
+  // Any crash of ours during the walk fails it, whatever the screens looked like.
+  const crashes = (shell("logcat -d").match(/FATAL EXCEPTION[\s\S]{0,200}?Process: io\.freemytv[^\n]*/g) || []);
+  if (crashes.length) results.push({ name: "crashes", status: "fail", reason: `${crashes.length} crash(es) of Free My TV in the log` });
   const failed = results.filter((r) => r.status === "fail");
   const lines = [
     `# TV test ${model}`, "",

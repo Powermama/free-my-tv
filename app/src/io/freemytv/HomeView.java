@@ -147,13 +147,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // The banner's change: the next picture fades in over the last (its own layer only), every 10 s while the focus is
     // elsewhere, or with Left and Right.
     private Recs.Poster bannerFrom;
-    private long bannerFadeAt, bannerShownAt;
-    private static final long BANNER_FADE_MS = 600, BANNER_EVERY_MS = 10_000;
+    private long bannerFadeAt, bannerShownAt, bannerFadeMs;
+    // Its own turn: a calm fade; Left and Right: a quick one (each frame of it draws the whole screen on this GPU).
+    private static final long BANNER_FADE_MS = 600, BANNER_STEP_MS = 250, BANNER_EVERY_MS = 10_000;
     private final Spring[][] posterFocus = {springs(ROW_MAX), springs(ROW_MAX)};
     private final Spring[] posterScroll = {new Spring(0.3f, 0.9f, 0), new Spring(0.3f, 0.9f, 0)};
     private final int[] posterIndex = new int[2];
     private int posterRow;   // Z_POSTERS: 0 the films, 1 the shows
     private LinearGradient bannerFade, bannerScrim;
+    /** Banner pictures with the scrims already painted in (once): a crossfade then only blends two pictures. */
+    private final java.util.Set<Bitmap> bannerReady = java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
     private float bannerFadeW;
     private Paint bannerTitle, bannerMeta, bannerButton;
 
@@ -5049,7 +5052,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             return;
         }
         if (banner) {
-            showBanner(next);
+            showBanner(next, BANNER_STEP_MS);
         } else {
             posterIndex[posterRow] = next;
             prefetchFocused();
@@ -5074,12 +5077,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /** Another of the banner's titles: it fades in over the one before, and the one after is fetched meanwhile. */
-    private void showBanner(int index) {
+    private void showBanner(int index, long fadeMs) {
         if (index == bannerIndex || bannerPicks.isEmpty()) return;
         int h0 = Math.round(P_BANNER_H * k);
         bannerFrom = recs.banner(bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1)), w, h0);
         bannerIndex = index;
         bannerFadeAt = bannerShownAt = SystemClock.uptimeMillis();
+        bannerFadeMs = fadeMs;
         recs.banner(bannerPicks.get((index + 1) % bannerPicks.size()), w, h0);   // ready for its turn
         platter.invalidate();
         wake();
@@ -5091,11 +5095,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (bannerShownAt == 0) bannerShownAt = up;
         if (bannerFadeAt == 0 && online && bannerPicks.size() > 1 && zone != Z_BANNER && !sheetOpen
                 && pageScroll.value < 1 && up - bannerShownAt > BANNER_EVERY_MS) {
-            showBanner((bannerIndex + 1) % bannerPicks.size());
+            showBanner((bannerIndex + 1) % bannerPicks.size(), BANNER_FADE_MS);
         }
         if (bannerFadeAt == 0) return false;
         platter.invalidate();
-        if (up - bannerFadeAt < BANNER_FADE_MS) return true;
+        if (up - bannerFadeAt < bannerFadeMs) return true;
         bannerFadeAt = 0;
         bannerFrom = null;
         return true;   // one more frame: the last one at full
@@ -5186,8 +5190,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Recs.Pick p = bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1));
         float bh = P_BANNER_H * k;
         Recs.Poster picture = recs.banner(p, w, Math.round(bh));   // at the banner's exact size: drawn 1:1
+        if (picture != null) prepareBanner(picture.bitmap, bh);
         // Changing: the last picture under, this one over it, coming in (an ease, 0.6 s); the words come with it.
-        float t = bannerFadeAt == 0 ? 1 : fadeEase(bannerFadeAt, SystemClock.uptimeMillis(), BANNER_FADE_MS);
+        float t = bannerFadeAt == 0 ? 1 : fadeEase(bannerFadeAt, SystemClock.uptimeMillis(), bannerFadeMs);
         if (picture == null && bannerFrom != null) {   // not decoded yet: the last one stays until it is
             picture = bannerFrom;
             t = 1;
@@ -5202,17 +5207,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             fill.setColor(0xFF1C1C1E);
             c.drawRect(0, 0, w, bh, fill);
         }
-        if (bannerFade == null || bannerFadeW != w) {
-            bannerFade = new LinearGradient(0, bh - 420 * k, 0, bh, 0x00000000 | (P_GROUND & 0xFFFFFF), P_GROUND, Shader.TileMode.CLAMP);
-            bannerScrim = new LinearGradient(0, 0, w * 0.62f, 0, 0xB3000000, 0x00000000, Shader.TileMode.CLAMP);
-            bannerFadeW = w;
+        if (picture == null || !bannerReady.contains(picture.bitmap)) {   // no picture yet: the scrims over the ground
+            paintScrims(c, bh);
         }
-        fill.setColor(0xFF000000);   // opaque: a shader is scaled by the paint's alpha (the dots' leave it at 40%)
-        fill.setShader(bannerScrim);
-        c.drawRect(0, 0, w * 0.62f, bh, fill);
-        fill.setShader(bannerFade);
-        c.drawRect(0, bh - 420 * k, w, bh, fill);
-        fill.setShader(null);
         float x = P_LEFT * k, base = 330 * k;
         int ta = Math.round(255 * t);
         bannerTitle.setAlpha(ta);
@@ -5241,6 +5238,31 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawRoundRect(tmp, 5 * k, 5 * k, fill);
             dx += dw + 10 * k;
         }
+    }
+
+    /** The banner's scrims: darker at the left behind the words, and fading into the page's ground at the foot. */
+    private void paintScrims(Canvas c, float bh) {
+        if (bannerFade == null || bannerFadeW != w) {
+            bannerFade = new LinearGradient(0, bh - 420 * k, 0, bh, P_GROUND & 0xFFFFFF, P_GROUND, Shader.TileMode.CLAMP);
+            bannerScrim = new LinearGradient(0, 0, w * 0.62f, 0, 0xB3000000, 0x00000000, Shader.TileMode.CLAMP);
+            bannerFadeW = w;
+        }
+        fill.setColor(0xFF000000);   // opaque: a shader is scaled by the paint's alpha (the dots' leave it at 40%)
+        fill.setShader(bannerScrim);
+        c.drawRect(0, 0, w * 0.62f, bh, fill);
+        fill.setShader(bannerFade);
+        c.drawRect(0, bh - 420 * k, w, bh, fill);
+        fill.setShader(null);
+    }
+
+    /**
+     * The scrims painted into the picture itself, once (it's ours: decoded mutable for this): every later frame, the
+     * crossfade's above all, draws one bitmap instead of a bitmap and two gradients over the whole width.
+     */
+    private void prepareBanner(Bitmap b, float bh) {
+        if (bannerReady.contains(b) || !b.isMutable()) return;
+        paintScrims(new Canvas(b), bh);
+        bannerReady.add(b);
     }
 
     /**

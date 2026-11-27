@@ -1578,6 +1578,7 @@ final class Recs {
                 BitmapFactory.decodeFile(f.getPath(), bounds);
                 BitmapFactory.Options o = new BitmapFactory.Options();
                 o.inPreferredConfig = Bitmap.Config.RGB_565;
+                o.inMutable = true;   // the home screen paints its scrims into it once (HomeView.drawBanner)
                 o.inSampleSize = 1;
                 while (bounds.outWidth / (o.inSampleSize * 2) >= w) o.inSampleSize *= 2;
                 Bitmap full = BitmapFactory.decodeFile(f.getPath(), o);
