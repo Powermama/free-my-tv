@@ -75,6 +75,10 @@ final class WatchLog {
             it.app = o.optString("app");
             it.engaged = o.optLong("at");
             String link = o.optString("link");
+            if (link.isEmpty()) {   // a link found since (Netflix's, by Wikidata): this hour's list may know it
+                Recs.Pick now = Recs.get(c).find(o.optString("kind"), o.optInt("id"));
+                if (now != null && now.link != null) link = now.link;
+            }
             it.intent = link.isEmpty() ? null : new Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(it.pkg).toUri(Intent.URI_INTENT_SCHEME);
             out.add(it);
         }

@@ -12,6 +12,7 @@ import android.os.Handler;
 import android.os.Looper;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -1502,6 +1503,63 @@ final class Recs {
             return size() > 20;
         }
     };
+
+    /**
+     * Netflix opens a title only by its own id (netflix.com/title/80057281), which TMDB doesn't have. Wikidata, the open
+     * database behind Wikipedia, has it for most titles beside their TMDB id: one query for all the picks that open
+     * Netflix without a link yet, the links saved with the list, a title it doesn't know asked for once per run.
+     */
+    void netflixLinks(List<Pick> list) {
+        List<Pick> todo = new ArrayList<>();
+        synchronized (wikidataAsked) {
+            for (Pick p : list) {
+                if (p.id > 0 && p.link == null && "com.netflix.ninja".equals(p.pkg) && wikidataAsked.add(p.kind + "/" + p.id)) todo.add(p);
+            }
+        }
+        if (todo.isEmpty()) return;
+        io.execute(() -> {
+            StringBuilder movies = new StringBuilder(), shows = new StringBuilder();
+            for (Pick p : todo) ("movie".equals(p.kind) ? movies : shows).append(" \"").append(p.id).append('"');
+            String q = "SELECT ?t ?n ?k WHERE { { VALUES ?t {" + movies + " } ?i wdt:P4947 ?t . BIND(\"movie\" AS ?k) }"
+                    + " UNION { VALUES ?t {" + shows + " } ?i wdt:P4983 ?t . BIND(\"tv\" AS ?k) } ?i wdt:P1874 ?n }";
+            int found = 0;
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL("https://query.wikidata.org/sparql?query="
+                        + URLEncoder.encode(q, "UTF-8")).openConnection();
+                c.setRequestProperty("Accept", "application/sparql-results+json");
+                c.setRequestProperty("User-Agent", "FreeMyTV (https://github.com/Powermama/free-my-tv)");   // Wikidata asks for one
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(15000);
+                c.setInstanceFollowRedirects(false);
+                StringBuilder body = new StringBuilder();
+                try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(c.getInputStream(), "UTF-8"))) {
+                    for (String line; (line = r.readLine()) != null; ) body.append(line);
+                }
+                JSONArray rows = new JSONObject(body.toString()).getJSONObject("results").getJSONArray("bindings");
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject row = rows.getJSONObject(i);
+                    String kind = row.getJSONObject("k").getString("value"), netflix = row.getJSONObject("n").getString("value");
+                    int id = Integer.parseInt(row.getJSONObject("t").getString("value"));
+                    if (!netflix.matches("\\d{5,12}")) continue;   // Netflix's ids are numbers: nothing else goes into a link
+                    for (Pick p : todo) {
+                        if (p.id == id && kind.equals(p.kind) && p.link == null) {
+                            p.link = "https://www.netflix.com/title/" + netflix;
+                            found++;
+                        }
+                    }
+                }
+            } catch (IOException | JSONException | RuntimeException e) {
+                AppLog.w("wikidata: " + e.getMessage());
+            }
+            AppLog.w("wikidata: Netflix links for " + found + " of " + todo.size());
+            if (found > 0) {
+                save();
+                notifyListeners();
+            }
+        });
+    }
+
+    private final java.util.Set<String> wikidataAsked = new java.util.HashSet<>();
 
     /** The rows' posters (the sidebar build): small and many, so apart from the backdrops, at the size they are drawn. */
     private final Map<String, Poster> rowPosters = new java.util.LinkedHashMap<String, Poster>(32, 0.75f, true) {

@@ -5037,6 +5037,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         bannerPicks = banner;
         moviesRow = movies;
         showsRow = shows;
+        List<Recs.Pick> all = new ArrayList<>(banner);
+        all.addAll(movies);
+        all.addAll(shows);
+        recs.netflixLinks(all);   // Netflix's own ids, so its titles open on their page, not Netflix's home
         // Every row's posters now, quietly, one after another (each about 40 KB, then 0.35 MB decoded): scrolling
         // sideways later finds them ready instead of filling in.
         int pw = Math.round(P_POSTER_W * k), ph = Math.round(P_POSTER_H * k);
