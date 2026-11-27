@@ -390,6 +390,7 @@ final class Recs {
         take(out, seen, list, hour * cards, cards);
         take(out, seen, progress, 0, cards);
         take(out, seen, liked, hour * cards, cards);
+        for (Pick p : out) applyNetflix(p);   // the details fetched again may have made it anew, without
         return out;
     }
 
@@ -1436,7 +1437,12 @@ final class Recs {
 
     /** One of the titles this TV knows, by kind and id (the detail page), or null. */
     Pick find(String kind, int id) {
-        for (Pick p : picks) if (p.id == id && kind.equals(p.kind)) return p;
+        for (Pick p : picks) {
+            if (p.id == id && kind.equals(p.kind)) {
+                applyNetflix(p);
+                return p;
+            }
+        }
         return null;
     }
 
@@ -1513,7 +1519,8 @@ final class Recs {
         List<Pick> todo = new ArrayList<>();
         synchronized (wikidataAsked) {
             for (Pick p : list) {
-                if (p.id > 0 && p.link == null && "com.netflix.ninja".equals(p.pkg) && wikidataAsked.add(p.kind + "/" + p.id)) todo.add(p);
+                if (applyNetflix(p)) continue;   // known already: its link, again (a refreshed list's picks are new)
+                if (p.id > 0 && p.link == null && NETFLIX.equals(p.pkg) && wikidataAsked.add(p.kind + "/" + p.id)) todo.add(p);
             }
         }
         if (todo.isEmpty()) return;
@@ -1541,25 +1548,50 @@ final class Recs {
                     String kind = row.getJSONObject("k").getString("value"), netflix = row.getJSONObject("n").getString("value");
                     int id = Integer.parseInt(row.getJSONObject("t").getString("value"));
                     if (!netflix.matches("\\d{5,12}")) continue;   // Netflix's ids are numbers: nothing else goes into a link
-                    for (Pick p : todo) {
-                        if (p.id == id && kind.equals(p.kind) && p.link == null) {
-                            p.link = "https://www.netflix.com/title/" + netflix;
-                            found++;
-                        }
-                    }
+                    netflixIds().edit().putString(kind + "/" + id, netflix).apply();   // for good: it doesn't change
+                    for (Pick p : todo) if (p.id == id && kind.equals(p.kind) && applyNetflix(p)) found++;
+                }
+                // Asked and not known: such a title would open Netflix's home, not itself. Left out of the rows.
+                for (Pick p : todo) {
+                    if (p.link == null) synchronized (wikidataAsked) { netflixUnknown.add(p.kind + "/" + p.id); }
                 }
             } catch (IOException | JSONException | RuntimeException e) {
                 AppLog.w("wikidata: " + e.getMessage());
             }
             AppLog.w("wikidata: Netflix links for " + found + " of " + todo.size());
-            if (found > 0) {
-                save();
-                notifyListeners();
-            }
+            if (found > 0) save();
+            notifyListeners();   // the rows again: with the links, without the titles that have none
         });
     }
 
-    private final java.util.Set<String> wikidataAsked = new java.util.HashSet<>();
+    private final java.util.Set<String> wikidataAsked = new java.util.HashSet<>(), netflixUnknown = new java.util.HashSet<>();
+
+    /**
+     * A title the rows may show: anything but a Netflix one Wikidata had no id for (OK on it would only open Netflix's
+     * home). What's shown opens itself.
+     */
+    boolean opensItself(Pick p) {
+        if (p == null || !NETFLIX.equals(p.pkg) || p.link != null) return true;
+        synchronized (wikidataAsked) {
+            return !netflixUnknown.contains(p.kind + "/" + p.id);
+        }
+    }
+    private static final String NETFLIX = "com.netflix.ninja";
+
+    /** Netflix's ids by TMDB's ("movie/1234" → "80057281"), as Wikidata gave them: kept, since they never change. */
+    private SharedPreferences netflixIds() {
+        return context.getSharedPreferences("netflix-ids", Context.MODE_PRIVATE);
+    }
+
+    /** The pick's Netflix link from the kept ids, if it opens Netflix and has none: true when it has one now. */
+    private boolean applyNetflix(Pick p) {
+        if (p == null || !NETFLIX.equals(p.pkg)) return false;
+        if (p.link != null) return true;
+        String id = netflixIds().getString(p.kind + "/" + p.id, null);
+        if (id == null) return false;
+        p.link = "https://www.netflix.com/title/" + id;
+        return true;
+    }
 
     /** The rows' posters (the sidebar build): small and many, so apart from the backdrops, at the size they are drawn. */
     private final Map<String, Poster> rowPosters = new java.util.LinkedHashMap<String, Poster>(32, 0.75f, true) {

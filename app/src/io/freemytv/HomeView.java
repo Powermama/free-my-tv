@@ -5027,7 +5027,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The films and shows for the rows and the banner, this hour's, on the services this TV has. */
     private void updateRows() {
         if (!page()) return;
-        List<Recs.Pick> banner = recs.now(null, 5), movies = recs.now("movie", ROW_MAX), shows = recs.now("tv", ROW_MAX);
+        List<Recs.Pick> banner = recs.now(null, 6), movies = recs.now("movie", ROW_MAX + 2), shows = recs.now("tv", ROW_MAX + 2);
+        // Only what opens itself (a Netflix title with no id of Netflix's would open only Netflix's home).
+        banner.removeIf(p -> !recs.opensItself(p));
+        movies.removeIf(p -> !recs.opensItself(p));
+        shows.removeIf(p -> !recs.opensItself(p));
+        if (banner.size() > 5) banner = new ArrayList<>(banner.subList(0, 5));
+        if (movies.size() > ROW_MAX) movies = new ArrayList<>(movies.subList(0, ROW_MAX));
+        if (shows.size() > ROW_MAX) shows = new ArrayList<>(shows.subList(0, ROW_MAX));
         if (samePicks(banner, bannerPicks) && samePicks(movies, moviesRow) && samePicks(shows, showsRow)) {
             heroDirty = true;   // a poster or a backdrop may have come
             heroLayer.invalidate();
