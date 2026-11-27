@@ -1641,7 +1641,7 @@ final class Recs {
     /** The banner's pictures (the sidebar build): from the full backdrop on disk, at the banner's own size; two kept. */
     private final Map<String, Poster> banners = new java.util.LinkedHashMap<String, Poster>(4, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Poster> eldest) {
-            return size() > 3;   // the one showing, the one fading out, the next
+            return size() > 2;   // the one showing and the next (a fade holds the one before itself): 2.9 MB each
         }
     };
     private final java.util.Set<String> bannerPending = new java.util.HashSet<>();
