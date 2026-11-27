@@ -64,6 +64,8 @@ public class QuickPanelActivity extends Activity {
      */
     static final String EXTRA_INPUTS = "io.freemytv.extra.INPUTS_ONLY";
     static final String EXTRA_SIDEBAR = "io.freemytv.extra.SIDEBAR";
+    /** The settings page (the sidebar's Settings): the same glass and tiles over the whole screen, four across. */
+    static final String EXTRA_HUB = "io.freemytv.extra.HUB";
     /** The sidebar's own rows, by key; the others are the home screen's top buttons and open as they do. */
     private static final String SIDE_PROFILE = "side:profile", SIDE_HOME = "side:home", SIDE_APPS = "side:apps",
             SIDE_STORE = "side:store";
@@ -87,9 +89,15 @@ public class QuickPanelActivity extends Activity {
         float k = dm.widthPixels / 1920f;
         boolean only = getIntent().getBooleanExtra(EXTRA_INPUTS, false);
         boolean side = !only && getIntent().getBooleanExtra(EXTRA_SIDEBAR, false);
+        boolean hub = !only && !side && getIntent().getBooleanExtra(EXTRA_HUB, false);
         List<HomeApps.Item> inputs = only ? HomeApps.orderedInputs(this) : null;
         WindowManager.LayoutParams lp = getWindow().getAttributes();
-        if (side) {
+        if (hub) {
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.x = lp.y = 0;
+            lp.width = dm.widthPixels;
+            lp.height = dm.heightPixels;
+        } else if (side) {
             lp.gravity = Gravity.TOP | Gravity.START;
             lp.x = Math.round(MARGIN * k);
             lp.y = Math.round(MARGIN * k);
@@ -115,7 +123,7 @@ public class QuickPanelActivity extends Activity {
         getWindow().setAttributes(lp);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         overridePendingTransition(0, 0);   // the panel springs in by itself
-        view = new PanelView(this, k, tiles(), inputs, side ? sidebar() : null);
+        view = new PanelView(this, k, hub ? hubTiles() : tiles(), inputs, side ? sidebar() : null, hub);
         setContentView(view);
     }
 
@@ -135,6 +143,25 @@ public class QuickPanelActivity extends Activity {
             new Tile(Ui.tr("Accessibility"), "accessibility", 0xFF30D158, new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
             new Tile(Ui.tr("Settings"), "settings", 0xFF8E8E9A, new Intent(Settings.ACTION_SETTINGS)),
         };
+    }
+
+    /**
+     * The settings page's tiles: what the TV's own settings app holds, each straight to its screen, then the
+     * screensaver, all of the TV's settings, and Free My TV's own (for whoever looks after the TV).
+     */
+    private Tile[] hubTiles() {
+        Tile[] base = tiles();
+        Tile[] out = new Tile[base.length + 2];
+        int n = 0;
+        for (Tile t : base) {
+            if (t.symbol.equals("settings")) continue;   // "All settings" goes last, below
+            // "Picture", as Apple TV calls it, where the quick panel says "Display".
+            out[n++] = t.symbol.equals("tv_settings") ? new Tile(Ui.tr("Picture"), t.symbol, t.color, t.intents) : t;
+        }
+        out[n++] = new Tile(Ui.tr("Screensaver"), "bedtime", 0xFF5E5CE6, new Intent(Settings.ACTION_DREAM_SETTINGS));
+        out[n++] = new Tile(Ui.tr("All settings"), "settings", 0xFF8E8E9A, new Intent(Settings.ACTION_SETTINGS));
+        out[n++] = new Tile("Free My TV", "sparkles", 0xFFFF375F, new Intent(this, SettingsActivity.class));
+        return java.util.Arrays.copyOf(out, n);
     }
 
     /**
@@ -185,10 +212,13 @@ public class QuickPanelActivity extends Activity {
         view.close();
     }
 
-    /** Leaving for another app or the home screen closes it, like Google TV's panel. */
+    /**
+     * Leaving for another app or the home screen closes it, like Google TV's panel; the settings page stays, so Back
+     * from the screen a tile opened comes back to it.
+     */
     @Override protected void onStop() {
         super.onStop();
-        if (!isFinishing()) finish();
+        if (!isFinishing() && !getIntent().getBooleanExtra(EXTRA_HUB, false)) finish();
     }
 
     @Override public void finish() {
@@ -232,6 +262,8 @@ public class QuickPanelActivity extends Activity {
                 CARD_R = 46, TILE_R = 30, CHIP_R = 25, SYMBOL = 24;
         /** The sidebar: the profile row (taller, with the avatar), then the rows, and a line over the last one. */
         private static final float SIDE_PAD = 22, PROFILE_H = 104, SIDE_AVATAR = 64, SIDE_RULE = 28;
+        /** The settings page: its margins and the room between its tiles. */
+        private static final float HUB_PAD = 120, HUB_GAP = 28;
         /** The popover: no clock and no title (the HDMI button's label above it says what it is), a slim inset. */
         private static final float POP_INSET = 22, POP_CARD_R = 46;   // concentric: the rows' 24 + the inset; the lens glow (21) fits inside
         private static final int ROWS_VISIBLE = 6;
@@ -241,6 +273,10 @@ public class QuickPanelActivity extends Activity {
         private final float k;
         private final Tile[] tiles;
         private final boolean inputsOnly;   // the HDMI button's popover: no clock, no tiles, no title
+        private final boolean hub;          // the settings page: the whole screen, a title, four tiles across
+        private final int cols;
+        private final float tileH, gridTop;
+        private String status = "";
         private final List<HomeApps.Item> side;   // non-null: the sidebar, these rows in place of the clock and tiles
         private final int[] sideColors;
         private int sideFocus;
@@ -278,7 +314,7 @@ public class QuickPanelActivity extends Activity {
         private final int[] chipColor = new int[16];
         private final LinearGradient[] chipShader = new LinearGradient[16];
         private int chips;
-        private final float[] tileX = new float[8], tileY = new float[8], labelSize = new float[8];   // labelSize: shrunk to fit long words
+        private final float[] tileX = new float[12], tileY = new float[12], labelSize = new float[12];   // labelSize: shrunk to fit long words
         private float tileW;
 
         private final Runnable frame = new Runnable() {
@@ -298,11 +334,16 @@ public class QuickPanelActivity extends Activity {
             }
         };
 
-        PanelView(Context c, float k, Tile[] tiles, List<HomeApps.Item> only, List<HomeApps.Item> side) {
+        PanelView(Context c, float k, Tile[] tiles, List<HomeApps.Item> only, List<HomeApps.Item> side, boolean hub) {
             super(c);
             this.k = k;
             this.tiles = tiles;
             this.side = side;
+            this.hub = hub;
+            cols = hub ? 4 : 2;
+            tileH = (hub ? 200 : TILE_H) * k;
+            gridTop = hub ? 300 : GRID_TOP;
+            if (hub) status = status(c);
             inputsOnly = only != null;
             sideColors = new int[side == null ? 0 : side.size()];
             for (int i = 0; i < sideColors.length; i++) sideColors[i] = sideColor(side.get(i));
@@ -313,7 +354,7 @@ public class QuickPanelActivity extends Activity {
             }
             inset = inputsOnly ? POP_INSET : PAD;
             cardR = inputsOnly ? POP_CARD_R : CARD_R;
-            rowsTop = inputsOnly ? POP_INSET : side != null ? SIDE_PAD + 74 : GRID_TOP + 58;
+            rowsTop = inputsOnly ? POP_INSET : side != null ? SIDE_PAD + 74 : (hub ? 300 : GRID_TOP) + 58;
             if (inputsOnly) {
                 inputs = only;
                 inputsOpen = true;
@@ -362,7 +403,7 @@ public class QuickPanelActivity extends Activity {
                         int i = id - 1;
                         if (inputsOpen || i >= tiles.length) return false;
                         out.set(Math.round(tileX[i]), Math.round(tileY[i]), Math.round(tileX[i] + tileW),
-                                Math.round(tileY[i] + TILE_H * k));
+                                Math.round(tileY[i] + tileH));
                         return true;
                     }
                     int i = id - ROW_IDS - 1;
@@ -404,10 +445,10 @@ public class QuickPanelActivity extends Activity {
             sheen = new LinearGradient(0, 0, 0, h * 0.42f, night ? 0x1FFFFFFF : 0x66FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP);
             cardRim = new LinearGradient(0, 0, w, h, new int[] {0xB3FFFFFF, 0x1AFFFFFF, 0x14FFFFFF, 0x66FFFFFF},
                     new float[] {0, 0.35f, 0.65f, 1}, Shader.TileMode.CLAMP);
-            tileRim = night ? new LinearGradient(0, 0, 0, TILE_H * k, 0x40FFFFFF, 0x0AFFFFFF, Shader.TileMode.CLAMP)
-                    : new LinearGradient(0, 0, 0, TILE_H * k, 0x0A000000, 0x1A000000, Shader.TileMode.CLAMP);
-            lens = night ? new LinearGradient(0, 0, 0, TILE_H * k, 0xFFFFFFFF, 0xFFE4E8F4, Shader.TileMode.CLAMP)
-                    : new LinearGradient(0, 0, 0, TILE_H * k, 0xFF3A3A3C, 0xFF1D1D1F, Shader.TileMode.CLAMP);
+            tileRim = night ? new LinearGradient(0, 0, 0, tileH, 0x40FFFFFF, 0x0AFFFFFF, Shader.TileMode.CLAMP)
+                    : new LinearGradient(0, 0, 0, tileH, 0x0A000000, 0x1A000000, Shader.TileMode.CLAMP);
+            lens = night ? new LinearGradient(0, 0, 0, tileH, 0xFFFFFFFF, 0xFFE4E8F4, Shader.TileMode.CLAMP)
+                    : new LinearGradient(0, 0, 0, tileH, 0xFF3A3A3C, 0xFF1D1D1F, Shader.TileMode.CLAMP);
             // Faint light resting in the glass: it doesn't drift, the panel draws only while something moves.
             float r = 380 * k;
             glows = new RadialGradient[] {
@@ -415,15 +456,17 @@ public class QuickPanelActivity extends Activity {
                 new RadialGradient(0, 0, r, 0x2022C4FF, 0x0022C4FF, Shader.TileMode.CLAMP),
                 new RadialGradient(0, 0, r * 0.85f, 0x1AFF3D8B, 0x00FF3D8B, Shader.TileMode.CLAMP),
             };
-            tileW = (w - 2 * PAD * k - GAP * k) / 2;
+            float pad = (hub ? HUB_PAD : PAD) * k, gap = (hub ? HUB_GAP : GAP) * k;
+            tileW = (w - 2 * pad - (cols - 1) * gap) / cols;
             float room = tileW - 44 * k;
             for (int i = 0; i < tiles.length; i++) {
-                label.setTextSize(24 * k);
-                labelSize[i] = 24 * k * Math.min(1, room / Math.max(1, label.measureText(tiles[i].label)));
+                float size = (hub ? 30 : 24) * k;
+                label.setTextSize(size);
+                labelSize[i] = size * Math.min(1, room / Math.max(1, label.measureText(tiles[i].label)));
             }
             for (int i = 0; i < tiles.length; i++) {
-                tileX[i] = PAD * k + (i % 2) * (tileW + GAP * k);
-                tileY[i] = GRID_TOP * k + (i / 2) * (TILE_H + GAP) * k;
+                tileX[i] = pad + (i % cols) * (tileW + gap);
+                tileY[i] = gridTop * k + (i / cols) * (tileH + gap);
             }
             aimLens(true);
         }
@@ -447,6 +490,15 @@ public class QuickPanelActivity extends Activity {
             invalidate();
         }
 
+        /** "Online · Wi-Fi", "Online · Ethernet" or "Offline": the connection, as Android judges it (validated). */
+        private String status(Context c) {
+            android.net.ConnectivityManager cm = c.getSystemService(android.net.ConnectivityManager.class);
+            android.net.NetworkCapabilities caps = cm == null ? null : cm.getNetworkCapabilities(cm.getActiveNetwork());
+            if (caps == null || !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return Ui.tr("Offline");
+            String how = caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) ? "Ethernet" : Ui.tr("Wi-Fi");
+            return Ui.trf("Online · {how}", "how", how);
+        }
+
         /** Points the lens at the focused tile, or the focused row of the Inputs list. */
         private void aimLens(boolean snap) {
             float x, y, w, h;
@@ -464,7 +516,7 @@ public class QuickPanelActivity extends Activity {
                 x = tileX[focus];
                 y = tileY[focus];
                 w = tileW;
-                h = TILE_H * k;
+                h = tileH;
             }
             if (snap) {
                 lensX.snap(x);
@@ -530,7 +582,7 @@ public class QuickPanelActivity extends Activity {
             if (alpha < 255) c.saveLayerAlpha(card, alpha);
             else c.save();
             drawGlass(c);
-            if (!inputsOnly && side == null) drawHeader(c);
+            if (!inputsOnly && side == null && (!hub || !inputsOpen)) drawHeader(c);
             float p = page.value;
             if (p < 0.999f) {
                 if (side != null) drawSide(c, 1 - p);
@@ -549,6 +601,12 @@ public class QuickPanelActivity extends Activity {
         /** Tinted glass with faint light inside, a sheen at the top and a bright rim. */
         private void drawGlass(Canvas c) {
             float r = cardR * k;
+            if (hub) {   // the whole screen: the page's own dark ground, no card edge at the screen's
+                fill.setShader(null);
+                fill.setColor(0xFF0E0E10);
+                c.drawRect(card, fill);
+                return;
+            }
             if (side != null) {   // opaque glass: the light can go straight on it, no layer to keep it inside
                 drawOpaqueGlass(c, r);
                 return;
@@ -595,7 +653,19 @@ public class QuickPanelActivity extends Activity {
             rim.setShader(null);
         }
 
+        /** The settings page: its name, large, and one quiet line of how the TV is connected. */
+        private void drawHubHeader(Canvas c) {
+            title.setTextSize(56 * k);
+            c.drawText(Ui.tr("Settings"), HUB_PAD * k - Ui.leftBearing(title, Ui.tr("Settings")), 170 * k, title);
+            title.setTextSize(30 * k);
+            c.drawText(status, HUB_PAD * k, 222 * k, empty);
+        }
+
         private void drawHeader(Canvas c) {
+            if (hub) {
+                drawHubHeader(c);
+                return;
+            }
             c.drawText(dateText, PAD * k, (PAD + 24) * k, date);
             c.drawText(clockText, PAD * k - clockBearing, (PAD + 116) * k, clock);
         }
@@ -606,7 +676,7 @@ public class QuickPanelActivity extends Activity {
             c.translate(0, (1 - a) * -24 * k);
             float r = TILE_R * k;
             for (int i = 0; i < tiles.length; i++) {
-                rect.set(tileX[i], tileY[i], tileX[i] + tileW, tileY[i] + TILE_H * k);
+                rect.set(tileX[i], tileY[i], tileX[i] + tileW, tileY[i] + tileH);
                 fill.setColor(tileFill);
                 c.drawRoundRect(rect, r, r, fill);
                 drawRim(c, rect, r);
@@ -615,14 +685,14 @@ public class QuickPanelActivity extends Activity {
             for (int i = 0; i < tiles.length; i++) {
                 float on = nearness(tileX[i], tileY[i], tileW);
                 float lift = on * (1 - 0.04f * press.value);
-                float cx = tileX[i] + tileW / 2, cy = tileY[i] + TILE_H * k / 2;
+                float cx = tileX[i] + tileW / 2, cy = tileY[i] + tileH / 2;
                 c.save();
                 c.scale(1 + 0.03f * lift, 1 + 0.03f * lift, cx, cy);
                 float chipX = tileX[i] + (22 + CHIP_R) * k, chipY = tileY[i] + (22 + CHIP_R) * k;
                 drawChip(c, chipX, chipY, tiles[i].color, tiles[i].symbol, on);
                 label.setColor(mix(ink, focusInk, on));
                 label.setTextSize(labelSize[i]);
-                c.drawText(tiles[i].label, tileX[i] + 22 * k, tileY[i] + TILE_H * k - 24 * k, label);
+                c.drawText(tiles[i].label, tileX[i] + 22 * k, tileY[i] + tileH - 24 * k, label);
                 c.restore();
             }
             c.restoreToCount(saved);
@@ -791,6 +861,11 @@ public class QuickPanelActivity extends Activity {
             } else if (SIDE_PROFILE.equals(it.key)) {
                 startActivity(new Intent(c, WhoActivity.class));
                 finish();
+            } else if (it.kind == HomeApps.ANDROID_SETTINGS) {
+                // The settings page over the whole screen: this same activity in that mode (it's singleTask: started
+                // again, it would only take that as "close", the Settings button's way).
+                setIntent(new Intent(c, QuickPanelActivity.class).putExtra(EXTRA_HUB, true));
+                recreate();
             } else if (it.kind == HomeApps.RECENTS) {
                 startActivity(new Intent(c, HomeActivity.class).putExtra(HomeActivity.EXTRA_RECENTS, true)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
@@ -872,10 +947,13 @@ public class QuickPanelActivity extends Activity {
                 if (inputFocus == before) return;
             } else {
                 int before = focus;
-                if (code == KeyEvent.KEYCODE_DPAD_LEFT && focus % 2 == 1) focus--;
-                if (code == KeyEvent.KEYCODE_DPAD_RIGHT && focus % 2 == 0 && focus + 1 < tiles.length) focus++;
-                if (code == KeyEvent.KEYCODE_DPAD_UP && focus >= 2) focus -= 2;
-                if (code == KeyEvent.KEYCODE_DPAD_DOWN && focus + 2 < tiles.length) focus += 2;
+                if (code == KeyEvent.KEYCODE_DPAD_LEFT && focus % cols > 0) focus--;
+                if (code == KeyEvent.KEYCODE_DPAD_RIGHT && focus % cols < cols - 1 && focus + 1 < tiles.length) focus++;
+                if (code == KeyEvent.KEYCODE_DPAD_UP && focus >= cols) focus -= cols;
+                if (code == KeyEvent.KEYCODE_DPAD_DOWN && focus + cols < tiles.length) focus += cols;
+                if (code == KeyEvent.KEYCODE_DPAD_DOWN && focus + cols >= tiles.length && focus / cols < (tiles.length - 1) / cols) {
+                    focus = tiles.length - 1;   // down into a shorter last row: its last tile
+                }
                 if (focus == before) return;
             }
             click.move();
@@ -905,7 +983,8 @@ public class QuickPanelActivity extends Activity {
                 spoken.focusMoved();
                 return;
             }
-            if (open(tiles[focus].intents)) finish();
+            // The quick panel goes once a tile opened; the settings page stays under it, for Back.
+            if (open(tiles[focus].intents) && !hub) finish();
         }
     }
 }
