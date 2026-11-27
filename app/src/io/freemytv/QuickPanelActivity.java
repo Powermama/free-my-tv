@@ -37,8 +37,8 @@ import java.util.List;
  * sound panels, network, remotes and accessories, accessibility and all settings. Each tile opens the TV's own screen;
  * Inputs lists them right here. Back, or the Settings button again, closes it.
  * The home screen's Left key opens it as the sidebar (EXTRA_SIDEBAR, the PRD's Screen 2): who is watching, Home, Apps,
- * the home screen's top buttons (Live TV or its input, Inputs, the TV's own Settings) and Get apps last, quiet; Inputs goes one
- * level in, and Right or Back closes it. The home screen stays where it is, dimmed behind it.
+ * Inputs (Live TV's among them), the TV's own Settings, Recent Apps and Get apps last, quiet; Inputs goes one level
+ * in, and Right or Back closes it. The home screen stays where it is, dimmed behind it.
  * Drawn as liquid glass: TVs turn window blur off (and video plays on its own plane, under any blur), so the glass is
  * painted, nearly opaque so it reads over anything: the home screen's look (white with dark ink by day, smoked with
  * white ink at night, Settings > Theme), faint light inside, bright rims, and one focus lens that flows between the tiles.
@@ -148,7 +148,8 @@ public class QuickPanelActivity extends Activity {
         rows.add(HomeApps.action(HomeApps.SETTINGS, SIDE_HOME, Ui.tr("Home"), "home"));
         rows.add(HomeApps.action(HomeApps.ALL_APPS, SIDE_APPS, Ui.tr("Apps"), "apps"));
         for (HomeApps.Item it : HomeApps.topButtons(this)) {
-            if (it.kind == HomeApps.RECENTS || HomeApps.TOP_STORE.equals(it.key)) continue;
+            // Live TV (or the input it opens) is one level in, under Inputs: one row fewer.
+            if (it.kind == HomeApps.RECENTS || HomeApps.TOP_STORE.equals(it.key) || HomeApps.TOP_LIVE.equals(it.key)) continue;
             // Settings: the TV's own (picture, sound, network); Free My TV's stay behind its icon in Apps.
             rows.add(it.kind == HomeApps.SETTINGS ? HomeApps.tvSettings() : it);
         }

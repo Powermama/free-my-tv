@@ -484,6 +484,19 @@ final class HomeApps {
      */
     private static final Pattern CEC_PLACEHOLDER = Pattern.compile("(TV|Recorder|Tuner|Playback|AudioSystem|Reserved|Free)_\\d+");
 
+    /**
+     * The name the device on an input gave over HDMI-CEC, kept for when it doesn't answer: a Sky Q box asleep leaves only
+     * Android's placeholder ("Playback_3"), and the input keeps "Sky Q". "" when no device ever said one.
+     */
+    private static String deviceName(Context c, String inputId, String reported) {
+        android.content.SharedPreferences names = c.getSharedPreferences("cec-names", Context.MODE_PRIVATE);
+        if (!reported.isEmpty() && !CEC_PLACEHOLDER.matcher(reported).matches()) {
+            if (!reported.equals(names.getString(inputId, ""))) names.edit().putString(inputId, reported).apply();
+            return reported;
+        }
+        return names.getString(inputId, "");
+    }
+
     private static List<Item> inputs(Context c, boolean all) {
         List<Item> out = new ArrayList<>();
         TvInputManager tim = (TvInputManager) c.getSystemService(Context.TV_INPUT_SERVICE);
@@ -531,7 +544,7 @@ final class HomeApps {
             } catch (RuntimeException ignored) {
             }
             String reported = devices.containsKey(info.getId()) ? devices.get(info.getId()) : "";
-            if (CEC_PLACEHOLDER.matcher(reported).matches()) reported = "";   // the device didn't say its name
+            reported = deviceName(c, info.getId(), reported);
             String label = custom != null && custom.length() > 0 ? custom.toString()
                     : !reported.isEmpty() && connected ? reported : "HDMI " + number;
             String symbol = connected || custom != null ? deviceSymbol(label) : "hdmi";
@@ -866,6 +879,33 @@ final class HomeApps {
             out.add(new String[] {pkg, String.valueOf(ri.loadLabel(pm))});
         }
         return out;
+    }
+
+    /**
+     * The button for a title on `service` (its app `pkg`): "Open in Netflix" when the app is on the TV, "Get Netflix"
+     * (its Play Store page) when it isn't, or null when no service is known.
+     */
+    static String watchLabel(Context c, String pkg, String service) {
+        if (pkg == null || service == null || service.isEmpty()) return null;
+        return launchIntent(c.getPackageManager(), pkg) != null ? Ui.trf("Open in {app}", "app", service)
+                : Ui.trf("Get {app}", "app", service);
+    }
+
+    /** Opens the title's app, or, without it on the TV, that app's page in the store to install it. */
+    static boolean watch(Context c, String pkg, String service, String link) {
+        if (pkg == null) return false;
+        if (launchIntent(c.getPackageManager(), pkg) != null) return open(c, app(pkg, service, link), null);
+        String store = storePackage(c);
+        if (store == null) return false;
+        Intent page = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=" + pkg)).setPackage(store)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            c.startActivity(page);
+            return true;
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            AppLog.w("store page: " + e.getMessage());
+            return false;
+        }
     }
 
     static Intent launchIntent(PackageManager pm, String pkg) {

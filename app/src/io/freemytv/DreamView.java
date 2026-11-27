@@ -139,7 +139,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private String clock = "", date = "";
     private Paint datePaint, clockPaint, weatherPaint, weatherDim, quotePaint, stalePaint;
     private Paint cornerDate, cornerQuote, cornerStale, cornerClock, labelPaint, metaPaint, hintPaint;
-    private TextPaint titlePaint;
+    private TextPaint titlePaint, aboutPaint;
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
@@ -266,6 +266,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         titlePaint = new TextPaint(Ui.text(Ui.displayMedium, 76 * k, 0xFFFFFFFF));
         titlePaint.setLetterSpacing(0.005f);
         metaPaint = Ui.text(Ui.medium, 29 * k, 0xC7FFFFFF);
+        aboutPaint = new TextPaint(Ui.text(Ui.regular, 28 * k, 0xD9FFFFFF));
         hintPaint = Ui.text(Ui.regular, 24 * k, 0x99FFFFFF);
         metaPaint.setLetterSpacing(0.014f);
         Symbols.warmWeather(getContext(), 30 * k);   // the corner's
@@ -751,18 +752,40 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             // With the hint, the caption moves up a line: the hint takes the meta's place, 72 px from the bottom edge.
             boolean hint = Prefs.saverWatch() && s.pick.pkg != null;
             float x = MARGIN * k, metaBase = (META_BASE - (hint ? 44 : 0)) * k, titleBase = metaBase - 58 * k;
+            // The sidebar build: a few lines about it in the meta's place, its last line where the meta's was; the
+            // title goes up by the lines above it.
+            String about = Config.SIDEBAR ? s.pick.overview : null;
+            StaticLayout o = null;
+            if (about != null && !about.isEmpty()) {
+                o = StaticLayout.Builder.obtain(about, 0, about.length(), aboutPaint, Math.round(TITLE_W * k))
+                        .setMaxLines(2).setEllipsize(TextUtils.TruncateAt.END).setLineSpacing(6 * k, 1)
+                        .setIncludePad(false).build();
+                titleBase -= o.getLineBaseline(o.getLineCount() - 1) - o.getLineBaseline(0) + 10 * k;
+            }
             String title = s.pick.title == null ? "" : s.pick.title;
             StaticLayout t = StaticLayout.Builder.obtain(title, 0, title.length(), titlePaint, Math.round(TITLE_W * k))
                     .setMaxLines(2).setEllipsize(TextUtils.TruncateAt.END).setAlignment(Layout.Alignment.ALIGN_NORMAL)
                     .setIncludePad(false).build();
             float originY = titleBase - t.getLineBaseline(t.getLineCount() - 1);
             float capTop = originY + t.getLineBaseline(0) - Ui.cap(titlePaint);
-            c.drawText(Recs.periodLabel(), x, capTop - 30 * k, labelPaint);
+            if (Config.SIDEBAR) {
+                // Where it plays, as its app's own banner, over the title; a few lines about it under: no list of dots.
+                drawService(c, s.pick, x, capTop - 30 * k);
+            } else {
+                c.drawText(Recs.periodLabel(), x, capTop - 30 * k, labelPaint);
+            }
             c.save();
             c.translate(x - Ui.leftBearing(titlePaint, title), originY);
             t.draw(c);
             c.restore();
-            if (s.pick.meta != null && !s.pick.meta.isEmpty()) c.drawText(s.pick.meta, x, metaBase, metaPaint);
+            if (o != null) {
+                c.save();
+                c.translate(x, metaBase - o.getLineBaseline(o.getLineCount() - 1));   // its last line on the meta's line
+                o.draw(c);
+                c.restore();
+            } else if (s.pick.meta != null && !s.pick.meta.isEmpty()) {
+                c.drawText(s.pick.meta, x, metaBase, metaPaint);
+            }
             if (hint) {
                 c.drawText(Ui.trf("Press OK to watch on {app} · any other button to close", "app", Recs.serviceName(s.pick)),
                         x, META_BASE * k, hintPaint);
@@ -771,6 +794,29 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             s.caption.endRecording();
         }
         s.caption.setPosition(0, 0, w, h);
+    }
+
+    /**
+     * The app it plays in, as that app's TV banner (the picture the TV's own launcher shows for it), small, with
+     * rounded corners, its bottom edge on `bottom`. Nothing when the app isn't on the TV.
+     */
+    private void drawService(Canvas c, Recs.Pick p, float x, float bottom) {
+        if (p.pkg == null) return;
+        android.graphics.drawable.Drawable banner;
+        try {
+            banner = getContext().getPackageManager().getApplicationBanner(p.pkg);
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            return;
+        }
+        if (banner == null) return;
+        float bh = 54 * k, bw = bh * 16f / 9, r = 10 * k;
+        android.graphics.Path clip = new android.graphics.Path();
+        clip.addRoundRect(x, bottom - bh, x + bw, bottom, r, r, android.graphics.Path.Direction.CW);
+        c.save();
+        c.clipPath(clip);   // recorded once per caption, not per frame
+        banner.setBounds(Math.round(x), Math.round(bottom - bh), Math.round(x + bw), Math.round(bottom));
+        banner.draw(c);
+        c.restore();
     }
 
     /** The title whose caption shows, if it has an app on the TV; null for your photos and the clock. */

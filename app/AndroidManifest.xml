@@ -187,6 +187,27 @@
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@style/FreeMyTV.Home" />
 
+        <!-- A title's page (the sidebar build's rows), before its app. -->
+        <activity
+            android:name=".TitleActivity"
+            android:process=":home"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:screenOrientation="landscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@style/FreeMyTV.Home" />
+
+        <!-- A title's trailer in YouTube's embeddable player: a process of its own, ended when it closes. -->
+        <activity
+            android:name=".TrailerActivity"
+            android:process=":trailer"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:screenOrientation="landscape"
+            android:hardwareAccelerated="true"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@style/FreeMyTV.Home" />
+
         <!-- Fire TV: the same home screen opened as a regular app (no resumeWhilePausing, which leaves window focus on
              Amazon's paused launcher on Fire OS). -->
         <activity

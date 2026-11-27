@@ -194,6 +194,10 @@ public class HomeActivity extends Activity {
     @Override public void onTrimMemory(int level) {
         super.onTrimMemory(level);
         if (level >= TRIM_MEMORY_COMPLETE) Recs.get(this).trim();
+        // Behind an app, or the system short of memory: the page's pictures go (about 12 MB), so the low memory killer
+        // takes neither this process nor the app in front; they come back from disk when the home screen shows again.
+        if (Config.SIDEBAR && (level >= TRIM_MEMORY_BACKGROUND || level == TRIM_MEMORY_RUNNING_LOW
+                || level == TRIM_MEMORY_RUNNING_CRITICAL)) Recs.get(this).trimRows();
     }
 
     /** The key is one of Remote Buttons' rows on this TV. */

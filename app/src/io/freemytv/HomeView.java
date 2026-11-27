@@ -144,6 +144,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // The banner (TMDB's picks, one at a time; Left and Right step through them) and the rows of films and shows.
     private List<Recs.Pick> bannerPicks = new ArrayList<>(), moviesRow = new ArrayList<>(), showsRow = new ArrayList<>();
     private int bannerIndex;
+    // The banner's change: the next picture fades in over the last (its own layer only), every 10 s while the focus is
+    // elsewhere, or with Left and Right.
+    private Recs.Poster bannerFrom;
+    private long bannerFadeAt, bannerShownAt;
+    private static final long BANNER_FADE_MS = 600, BANNER_EVERY_MS = 10_000;
     private final Spring[][] posterFocus = {springs(ROW_MAX), springs(ROW_MAX)};
     private final Spring[] posterScroll = {new Spring(0.3f, 0.9f, 0), new Spring(0.3f, 0.9f, 0)};
     private final int[] posterIndex = new int[2];
@@ -1104,6 +1109,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean heroFading = tickHeroFade(up);
         boolean bgFading = tickBackgroundFade(up);
         boolean nightMoving = tickNight(up);
+        boolean bannerFading = tickBanner(up);
         boolean menuMoving = menu.step(dt) | menuPick.step(dt);
         if (menuMoving || nightMoving && menuOpen) menuLayer.invalidate();
         else if (!menuOpen && menuLayer.getVisibility() == VISIBLE) menuLayer.setVisibility(INVISIBLE);
@@ -1131,7 +1137,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (updateClock()) {
             layoutStatus();
             status.invalidate();
-            if (Config.SIDEBAR) heroLayer.invalidate();   // the time at the top left
             if (hero != null && hero.clock) {
                 refreshHero(false);
                 heroLayer.invalidate();
@@ -1142,6 +1147,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Busy: something is moving, or the sheet or the drawer is open.
         boolean busy = tilesMoving || statusMoving || heroMoving || drawerItemsMoving || gridMoving || drawerMoving
                 || menuMoving || sheetMoving || toastFading || heroFading || bgFading || nightMoving || tintMoving || sheetOpen
+                || bannerFading
                 || sheet.value > 0.001f || recentMoving || drawerOpen || drawer.value > 0.001f || toast != null || !toasts.isEmpty();
         idle = !busy;
         if (busy) Choreographer.getInstance().postFrameCallback(this);
@@ -4968,6 +4974,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void enterRow(int r, boolean click) {
         if (r < 0) return;
+        if (r == R_MOVIES || r == R_SHOWS) prefetchFocused();
         zone = r == R_BANNER ? Z_BANNER : r == R_WATCH ? Z_WATCH : r == R_APPS ? Z_SHELF : Z_POSTERS;
         if (zone == Z_POSTERS) posterRow = r - R_MOVIES;
         if (zone == Z_WATCH) watchIndex = Math.min(watchIndex, watching.size() - 1);
@@ -5012,6 +5019,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         bannerPicks = banner;
         moviesRow = movies;
         showsRow = shows;
+        // Every row's posters now, quietly, one after another (each about 40 KB, then 0.35 MB decoded): scrolling
+        // sideways later finds them ready instead of filling in.
+        int pw = Math.round(P_POSTER_W * k), ph = Math.round(P_POSTER_H * k);
+        for (Recs.Pick p : movies) recs.rowPoster(p, pw, ph);
+        for (Recs.Pick p : shows) recs.rowPoster(p, pw, ph);
         bannerIndex = Math.min(bannerIndex, Math.max(0, banner.size() - 1));
         posterIndex[0] = Math.min(posterIndex[0], Math.max(0, movies.size() - 1));
         posterIndex[1] = Math.min(posterIndex[1], Math.max(0, shows.size() - 1));
@@ -5037,13 +5049,56 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             return;
         }
         if (banner) {
-            bannerIndex = next;
-            platter.invalidate();
+            showBanner(next);
         } else {
             posterIndex[posterRow] = next;
+            prefetchFocused();
         }
         retarget(false);
         click.move();
+    }
+
+    /** The focus rests on a poster a third of a second: its page's details are fetched, so OK opens it complete. */
+    private final Runnable prefetchDetails = new Runnable() {
+        @Override public void run() {
+            if (zone != Z_POSTERS) return;
+            List<Recs.Pick> list = posterList(posterRow);
+            int i = posterIndex[posterRow];
+            if (i < list.size()) recs.details(list.get(i), null);
+        }
+    };
+
+    private void prefetchFocused() {
+        handler.removeCallbacks(prefetchDetails);
+        handler.postDelayed(prefetchDetails, 330);
+    }
+
+    /** Another of the banner's titles: it fades in over the one before, and the one after is fetched meanwhile. */
+    private void showBanner(int index) {
+        if (index == bannerIndex || bannerPicks.isEmpty()) return;
+        int h0 = Math.round(P_BANNER_H * k);
+        bannerFrom = recs.banner(bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1)), w, h0);
+        bannerIndex = index;
+        bannerFadeAt = bannerShownAt = SystemClock.uptimeMillis();
+        recs.banner(bannerPicks.get((index + 1) % bannerPicks.size()), w, h0);   // ready for its turn
+        platter.invalidate();
+        wake();
+    }
+
+    /** The banner's fade and its turn every 10 s (not while it has the focus, not scrolled away); true while fading. */
+    private boolean tickBanner(long up) {
+        if (!page()) return false;
+        if (bannerShownAt == 0) bannerShownAt = up;
+        if (bannerFadeAt == 0 && online && bannerPicks.size() > 1 && zone != Z_BANNER && !sheetOpen
+                && pageScroll.value < 1 && up - bannerShownAt > BANNER_EVERY_MS) {
+            showBanner((bannerIndex + 1) % bannerPicks.size());
+        }
+        if (bannerFadeAt == 0) return false;
+        platter.invalidate();
+        if (up - bannerFadeAt < BANNER_FADE_MS) return true;
+        bannerFadeAt = 0;
+        bannerFrom = null;
+        return true;   // one more frame: the last one at full
     }
 
     /** OK on the banner or a poster: the title in its app, as the picks' cards open it. */
@@ -5060,9 +5115,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         List<Recs.Pick> list = zone == Z_BANNER ? bannerPicks : posterList(posterRow);
         int i = zone == Z_BANNER ? bannerIndex : posterIndex[posterRow];
         Recs.Pick p = i < list.size() ? list.get(i) : null;
-        if (p == null || p.pkg == null) return;
+        if (p == null) return;
         click.open();
-        HomeApps.open(activity, HomeApps.app(p.pkg, Recs.serviceName(p), p.link), this, w / 2, h / 2, 1, 1);
+        // The banner's button: straight to the app (or to the store, to get it); with no service known, its page.
+        if (zone == Z_BANNER && HomeApps.watch(activity, p.pkg, Recs.serviceName(p), p.link)) return;
+        // A poster: its page first (what it is, its score, the trailer), as the Apple TV app does.
+        activity.startActivity(new Intent(activity, TitleActivity.class)
+                .putExtra(TitleActivity.EXTRA_KIND, p.kind).putExtra(TitleActivity.EXTRA_ID, p.id));
+        activity.overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
     }
 
     private void posterRect(int row, int i, RectF out) {
@@ -5126,8 +5186,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         Recs.Pick p = bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1));
         float bh = P_BANNER_H * k;
         Recs.Poster picture = recs.banner(p, w, Math.round(bh));   // at the banner's exact size: drawn 1:1
+        // Changing: the last picture under, this one over it, coming in (an ease, 0.6 s); the words come with it.
+        float t = bannerFadeAt == 0 ? 1 : fadeEase(bannerFadeAt, SystemClock.uptimeMillis(), BANNER_FADE_MS);
+        if (picture == null && bannerFrom != null) {   // not decoded yet: the last one stays until it is
+            picture = bannerFrom;
+            t = 1;
+        }
+        if (t < 1 && bannerFrom != null) c.drawBitmap(bannerFrom.bitmap, 0, 0, imagePaint);
         if (picture != null) {
+            imagePaint.setAlpha(Math.round(255 * t));
             c.drawBitmap(picture.bitmap, 0, 0, imagePaint);
+            imagePaint.setAlpha(255);
         } else {
             fill.setShader(null);
             fill.setColor(0xFF1C1C1E);
@@ -5145,12 +5214,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.drawRect(0, bh - 420 * k, w, bh, fill);
         fill.setShader(null);
         float x = P_LEFT * k, base = 330 * k;
-        c.drawText(p.title, x - Ui.leftBearing(bannerTitle, p.title), base, bannerTitle);
+        int ta = Math.round(255 * t);
+        bannerTitle.setAlpha(ta);
+        bannerMeta.setAlpha(Math.round(0xD9 * t));
+        c.drawText(p.title, x - Ui.leftBearing(bannerTitle, p.title), base + 16 * k * (1 - t), bannerTitle);
         String meta = p.meta == null ? "" : p.meta;
-        if (!meta.isEmpty()) c.drawText(meta, x, base + 52 * k, bannerMeta);
+        if (!meta.isEmpty()) c.drawText(meta, x, base + 52 * k + 16 * k * (1 - t), bannerMeta);
+        bannerTitle.setAlpha(255);
+        bannerMeta.setAlpha(0xD9);
         // The button: its app's name; white when the banner has the focus, glass otherwise.
         boolean on = zone == Z_BANNER && !sheetOpen;
-        String label = Ui.trf("Open in {app}", "app", Recs.serviceName(p));
+        String label = HomeApps.watchLabel(getContext(), p.pkg, Recs.serviceName(p));
+        if (label == null) label = Ui.tr("Details");
         float tw = bannerButton.measureText(label), bx = x, by = base + 92 * k, bw = tw + 64 * k, bhh = 64 * k;
         tmp.set(bx, by, bx + bw, by + bhh);
         fill.setColor(on ? 0xFFFFFFFF : 0x33FFFFFF);

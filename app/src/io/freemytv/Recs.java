@@ -51,6 +51,7 @@ final class Recs {
         int id;
         String kind;            // "movie" or "tv"
         String title, backdrop, poster, meta = "", app, pkg;   // poster: the portrait image of the narrow cards
+        String overview = "";   // TMDB's few lines about it, in the TV's language (the sidebar build's screensaver)
         String link;            // opens the title in its app (looked up with Watchmode), or null: the app's home
         String servicePkg;      // open_in_stremio/-_nuvio: the TV's own app it streams on (pkg is then Stremio's or Nuvio's)
         String tag;             // Trakt: "Up next: S2 E5", "On your watchlist"…, first in the meta; else null
@@ -75,7 +76,7 @@ final class Recs {
     /** How often Trakt is asked whether the account changed (marked watched, the watchlist): one small request. */
     private static final long TRAKT_EVERY = 10 * 60_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 6;   // 6: lists of up to POOL + TRAKT_MAX
+    private static final int CACHE_VERSION = 7;   // 6: lists of up to POOL + TRAKT_MAX; 7: each title's overview
     /** TMDB's titles in the list (trending, then the new releases), as on main. */
     private static final int POOL = 24;
     /** Trakt's titles in the list: about what the tabs show of them (now(): up to 2 in 5 in progress, 3 in 5 liked). */
@@ -986,6 +987,7 @@ final class Recs {
         JSONObject o = get("/" + p.kind + "/" + p.id
                 + "?language=" + lang() + "&append_to_response=watch/providers,images" + (Config.OPEN_IN_STREMIO ? ",external_ids" : "") + "&include_image_language=null," + Ui.language.replaceAll("-.*", "") + ",en");
         p.title = title(p, o);
+        p.overview = o.optString("overview", "");
         String poster = o.optString("poster_path", "");
         if (!poster.isEmpty() && !"null".equals(poster)) p.poster = poster;
         String best = bestBackdrop(o.optJSONObject("images"));
@@ -1431,6 +1433,76 @@ final class Recs {
         return new Poster(card);
     }
 
+    /** One of the titles this TV knows, by kind and id (the detail page), or null. */
+    Pick find(String kind, int id) {
+        for (Pick p : picks) if (p.id == id && kind.equals(p.kind)) return p;
+        return null;
+    }
+
+    /**
+     * A title's details for its page, in one request: the overview, dates, runtime or seasons, genres, the age rating
+     * and the trailers. `done` gets them on the main thread, or null.
+     */
+    void details(Pick p, java.util.function.Consumer<JSONObject> done) {
+        String key = p.kind + "/" + p.id;
+        synchronized (detailCache) {
+            JSONObject have = detailCache.get(key);
+            if (have != null) {   // fetched while the focus rested on its poster: the page opens complete
+                main.post(() -> done.accept(have));
+                return;
+            }
+        }
+        io.execute(() -> {
+            synchronized (detailCache) {
+                JSONObject have = detailCache.get(key);
+                if (have != null) {
+                    main.post(() -> done.accept(have));
+                    return;
+                }
+            }
+            JSONObject d = null;
+            try {
+                String lang = Ui.language.replaceAll("-.*", "");
+                d = get("/" + p.kind + "/" + p.id + "?language=" + lang() + "&append_to_response=videos,watch/providers,"
+                        + ("movie".equals(p.kind) ? "release_dates" : "content_ratings") + "&include_video_language=" + lang + ",en");
+            } catch (Exception e) {
+                AppLog.w("details: " + e.getMessage());
+            }
+            JSONObject result = d;
+            if (d != null) synchronized (detailCache) { detailCache.put(key, d); }
+            if (done != null) main.post(() -> done.accept(result));
+        });
+    }
+
+    /**
+     * Where a title streams here (REGION, with a subscription or free), from its details: {name, package} per service
+     * this app knows, the ones installed on the TV first, each once.
+     */
+    List<String[]> streams(JSONObject details) {
+        List<String[]> on = new ArrayList<>(), off = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        JSONObject wp = details == null ? null : details.optJSONObject("watch/providers");
+        JSONObject here = wp == null || wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
+        for (String type : new String[] {"flatrate", "free", "ads"}) {
+            JSONArray list = here == null ? null : here.optJSONArray(type);
+            for (int i = 0; list != null && i < list.length(); i++) {
+                JSONObject o = list.optJSONObject(i);
+                String[] s = o == null ? null : service(o.optString("provider_name"), o.optInt("provider_id"));
+                if (s == null || !seen.add(s[1])) continue;
+                (installed(s[2]) ? on : off).add(new String[] {name(s[1]), s[2]});
+            }
+        }
+        on.addAll(off);
+        return on;
+    }
+
+    /** The last few titles' details, a few KB each: their pages open with everything at once. */
+    private final Map<String, JSONObject> detailCache = new java.util.LinkedHashMap<String, JSONObject>(16, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, JSONObject> eldest) {
+            return size() > 20;
+        }
+    };
+
     /** The rows' posters (the sidebar build): small and many, so apart from the backdrops, at the size they are drawn. */
     private final Map<String, Poster> rowPosters = new java.util.LinkedHashMap<String, Poster>(32, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Poster> eldest) {
@@ -1479,7 +1551,7 @@ final class Recs {
     /** The banner's pictures (the sidebar build): from the full backdrop on disk, at the banner's own size; two kept. */
     private final Map<String, Poster> banners = new java.util.LinkedHashMap<String, Poster>(4, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Poster> eldest) {
-            return size() > 2;
+            return size() > 3;   // the one showing, the one fading out, the next
         }
     };
     private final java.util.Set<String> bannerPending = new java.util.HashSet<>();
@@ -1542,6 +1614,16 @@ final class Recs {
         }
     }
 
+    /** The rows' posters and the banners: let go under memory pressure (both come back from disk when drawn again). */
+    void trimRows() {
+        synchronized (rowPosters) {
+            rowPosters.clear();
+        }
+        synchronized (banners) {
+            banners.clear();
+        }
+    }
+
     private static void prune(File dir) {
         // A download cut off when the system stopped the app leaves its .part behind.
         long stale = System.currentTimeMillis() - 10 * 60_000L;
@@ -1567,7 +1649,8 @@ final class Recs {
             for (Pick p : picks) {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("poster", p.poster == null ? "" : p.poster).put("link", p.link == null ? "" : p.link)
-                        .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
+                        .put("meta", p.meta).put("overview", p.overview).put("app", p.app == null ? "" : p.app)
+                        .put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("servicePkg", p.servicePkg == null ? "" : p.servicePkg)
                         .put("tag", p.tag == null ? "" : p.tag).put("mine", p.mine).put("detailed", p.detailed));
             }
@@ -1597,6 +1680,7 @@ final class Recs {
             p.poster = o.optString("poster");
             p.link = o.optString("link").isEmpty() ? null : o.optString("link");
             p.meta = o.optString("meta");
+            p.overview = o.optString("overview");
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.servicePkg = o.optString("servicePkg").isEmpty() ? null : o.optString("servicePkg");
