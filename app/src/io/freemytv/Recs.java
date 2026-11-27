@@ -1448,7 +1448,7 @@ final class Recs {
         synchronized (detailCache) {
             JSONObject have = detailCache.get(key);
             if (have != null) {   // fetched while the focus rested on its poster: the page opens complete
-                main.post(() -> done.accept(have));
+                if (done != null) main.post(() -> done.accept(have));
                 return;
             }
         }
@@ -1456,7 +1456,7 @@ final class Recs {
             synchronized (detailCache) {
                 JSONObject have = detailCache.get(key);
                 if (have != null) {
-                    main.post(() -> done.accept(have));
+                    if (done != null) main.post(() -> done.accept(have));   // null: only fetching ahead
                     return;
                 }
             }
