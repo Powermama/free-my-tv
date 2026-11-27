@@ -167,6 +167,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final BluetoothAdapter bluetooth;
     private boolean networkRegistered, devicesRegistered, mediaRegistered;
     private int network;   // 0 = not connected, 1 = Wi-Fi, 2 = Ethernet
+    /** The connection reaches the internet (Android's validated check); the page shows its offline banner without. */
+    private boolean online = true;
     private boolean bluetoothConnected, usbConnected;
     /** The status layer spans the screen while the icons are on (they sit at the left); off, it keeps its old width. */
     private boolean statusWide;
@@ -475,10 +477,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
             setNetwork(caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? 2
                     : caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? 1 : 0);
+            setOnline(caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
         }
 
         @Override public void onLost(Network network) {
             setNetwork(0);
+            setOnline(false);
         }
     };
 
@@ -487,6 +491,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (type == network) return;
         network = type;
         status.invalidate();
+    }
+
+    /** Online or not: the page swaps its banner, and hides the rows that need the internet until it's back. */
+    private void setOnline(boolean on) {
+        if (on == online) return;
+        online = on;
+        AppLog.w(on ? "online again" : "offline");
+        if (!page()) return;
+        platter.invalidate();
+        pageChanged();
     }
 
     private final BroadcastReceiver deviceCallback = new BroadcastReceiver() {
@@ -546,18 +560,22 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Reads the icons' state and listens for changes only while the setting is on (nothing runs with it off). */
     private void startStatus() {
-        if (!Prefs.statusIcons()) return;
-        updateDevices();
         // The registration hands the current network over at once, so the first read is this callback. With no
         // network at all it hands nothing, and the icon would keep the one from before the pause (Wi-Fi turned off).
-        if (connectivity != null && !networkRegistered) {
+        // The page needs it too, for its offline banner.
+        if ((Prefs.statusIcons() || page()) && connectivity != null && !networkRegistered) {
             try {
-                if (connectivity.getActiveNetwork() == null) setNetwork(0);
+                if (connectivity.getActiveNetwork() == null) {
+                    setNetwork(0);
+                    setOnline(false);
+                }
                 connectivity.registerDefaultNetworkCallback(networkCallback, handler);
                 networkRegistered = true;
             } catch (RuntimeException ignored) {
             }
         }
+        if (!Prefs.statusIcons()) return;
+        updateDevices();
         if (!devicesRegistered) {
             IntentFilter f = new IntentFilter();
             f.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
@@ -4893,10 +4911,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Where each row sits on the page, top to bottom; rows with nothing to show take no room. */
     private void layoutPage() {
-        rowOn[R_BANNER] = !bannerPicks.isEmpty();
+        rowOn[R_BANNER] = !online || !bannerPicks.isEmpty();   // offline, it says so
         rowOn[R_WATCH] = !watching.isEmpty();
-        rowOn[R_MOVIES] = !moviesRow.isEmpty();
-        rowOn[R_SHOWS] = !showsRow.isEmpty();
+        rowOn[R_MOVIES] = online && !moviesRow.isEmpty();
+        rowOn[R_SHOWS] = online && !showsRow.isEmpty();
         rowOn[R_APPS] = !shelf.isEmpty();
         rowTop[R_BANNER] = 0;
         float y = rowOn[R_BANNER] ? P_UNDER_BANNER : P_FIRST;   // under the banner, the first row rises into its fade
@@ -5008,6 +5026,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Sideways in a row of films or shows, or through the banner's; Left at the first opens the sidebar. */
     private void movePageSideways(int dx) {
         boolean banner = zone == Z_BANNER;
+        if (banner && !online) {   // one button: Left still opens the sidebar (Sky, the inputs), Right has nothing
+            if (dx < 0) openSidebar();
+            return;
+        }
         int size = banner ? bannerPicks.size() : posterList(posterRow).size(), at = banner ? bannerIndex : posterIndex[posterRow];
         int next = Math.max(0, Math.min(size - 1, at + dx));
         if (next == at) {
@@ -5026,6 +5048,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** OK on the banner or a poster: the title in its app, as the picks' cards open it. */
     private void openPagePick() {
+        if (zone == Z_BANNER && !online) {
+            click.open();
+            try {
+                activity.startActivity(new Intent(android.provider.Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (ActivityNotFoundException | SecurityException e) {
+                HomeApps.open(activity, HomeApps.tvSettings(), null);
+            }
+            return;
+        }
         List<Recs.Pick> list = zone == Z_BANNER ? bannerPicks : posterList(posterRow);
         int i = zone == Z_BANNER ? bannerIndex : posterIndex[posterRow];
         Recs.Pick p = i < list.size() ? list.get(i) : null;
@@ -5087,6 +5118,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
      * its details and a button for its app. Left and Right step through this hour's five.
      */
     private void drawBanner(Canvas c) {
+        if (!online) {
+            drawOfflineBanner(c);
+            return;
+        }
         if (bannerPicks.isEmpty()) return;
         Recs.Pick p = bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1));
         float bh = P_BANNER_H * k;
@@ -5103,6 +5138,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             bannerScrim = new LinearGradient(0, 0, w * 0.62f, 0, 0xB3000000, 0x00000000, Shader.TileMode.CLAMP);
             bannerFadeW = w;
         }
+        fill.setColor(0xFF000000);   // opaque: a shader is scaled by the paint's alpha (the dots' leave it at 40%)
         fill.setShader(bannerScrim);
         c.drawRect(0, 0, w * 0.62f, bh, fill);
         fill.setShader(bannerFade);
@@ -5130,6 +5166,45 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawRoundRect(tmp, 5 * k, 5 * k, fill);
             dx += dw + 10 * k;
         }
+    }
+
+    /**
+     * Offline: the last banner's picture if the TV still has it, darkened, saying so plainly, with one way out (the
+     * Wi-Fi settings). It comes back by itself: the rows return as soon as the connection reaches the internet again.
+     */
+    private void drawOfflineBanner(Canvas c) {
+        float bh = P_BANNER_H * k;
+        Recs.Poster picture = bannerPicks.isEmpty() ? null
+                : recs.banner(bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1)), w, Math.round(bh));
+        fill.setShader(null);
+        if (picture != null) {
+            c.drawBitmap(picture.bitmap, 0, 0, imagePaint);
+            fill.setColor(0xA6000000);
+        } else {
+            fill.setColor(0xFF1C1C1E);
+        }
+        c.drawRect(0, 0, w, bh, fill);
+        if (bannerFade == null || bannerFadeW != w) {
+            bannerFade = new LinearGradient(0, bh - 420 * k, 0, bh, P_GROUND & 0xFFFFFF, P_GROUND, Shader.TileMode.CLAMP);
+            bannerScrim = new LinearGradient(0, 0, w * 0.62f, 0, 0xB3000000, 0x00000000, Shader.TileMode.CLAMP);
+            bannerFadeW = w;
+        }
+        fill.setColor(0xFF000000);   // opaque, as above: the darkening left it at 65%
+        fill.setShader(bannerFade);
+        c.drawRect(0, bh - 420 * k, w, bh, fill);
+        fill.setShader(null);
+        float x = P_LEFT * k, base = 330 * k;
+        String title = Ui.tr("Your TV is offline"), note = Ui.tr("It keeps trying to connect. If it takes long, check the Wi-Fi.");
+        c.drawText(title, x - Ui.leftBearing(bannerTitle, title), base, bannerTitle);
+        c.drawText(note, x, base + 52 * k, bannerMeta);
+        boolean on = zone == Z_BANNER && !sheetOpen;
+        String label = Ui.tr("Wi-Fi settings");
+        float bw = bannerButton.measureText(label) + 64 * k, bhh = 64 * k, by = base + 92 * k;
+        tmp.set(x, by, x + bw, by + bhh);
+        fill.setColor(on ? 0xFFFFFFFF : 0x33FFFFFF);
+        c.drawRoundRect(tmp, bhh / 2, bhh / 2, fill);
+        bannerButton.setColor(on ? 0xFF1D1D1F : 0xFFFFFFFF);
+        c.drawText(label, x + 32 * k, by + bhh / 2 + Ui.halfCap(bannerButton), bannerButton);
     }
 
     /** The page's top layer: each row's name, Continue Watching and the posters (banner and apps have their own). */
