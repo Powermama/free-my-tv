@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -25,6 +27,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeProvider;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -33,6 +36,9 @@ import java.util.List;
  * own panel lives in its home app, which is off in our mode): the time, and tiles for the inputs, the TV's picture and
  * sound panels, network, remotes and accessories, accessibility and all settings. Each tile opens the TV's own screen;
  * Inputs lists them right here. Back, or the Settings button again, closes it.
+ * The home screen's Left key opens it as the sidebar (EXTRA_SIDEBAR, the PRD's Screen 2): who is watching, Home, Apps,
+ * the home screen's top buttons (Live TV or its input, Inputs, Settings) and Get apps last, quiet; Inputs goes one
+ * level in, and Right or Back closes it. The home screen stays where it is, dimmed behind it.
  * Drawn as liquid glass: TVs turn window blur off (and video plays on its own plane, under any blur), so the glass is
  * painted, nearly opaque so it reads over anything: the home screen's look (white with dark ink by day, smoked with
  * white ink at night, Settings > Theme), faint light inside, bright rims, and one focus lens that flows between the tiles.
@@ -57,6 +63,12 @@ public class QuickPanelActivity extends Activity {
      * on the home screen moves. Back closes it.
      */
     static final String EXTRA_INPUTS = "io.freemytv.extra.INPUTS_ONLY";
+    static final String EXTRA_SIDEBAR = "io.freemytv.extra.SIDEBAR";
+    /** The sidebar's own rows, by key; the others are the home screen's top buttons and open as they do. */
+    private static final String SIDE_PROFILE = "side:profile", SIDE_HOME = "side:home", SIDE_APPS = "side:apps",
+            SIDE_STORE = "side:store";
+    /** The sidebar in a 1920×1080 space: its width, and how much the home screen behind it dims. */
+    private static final float SIDE_W = 520, SIDE_DIM = 0.35f;
     private static final String TV_SETTINGS = "com.android.tv.settings";
     private static final int INPUTS = 0;
     /** The panel in a 1920×1080 space: its size and the margin to the screen's corner. */
@@ -74,9 +86,18 @@ public class QuickPanelActivity extends Activity {
         DisplayMetrics dm = getResources().getDisplayMetrics();
         float k = dm.widthPixels / 1920f;
         boolean only = getIntent().getBooleanExtra(EXTRA_INPUTS, false);
+        boolean side = !only && getIntent().getBooleanExtra(EXTRA_SIDEBAR, false);
         List<HomeApps.Item> inputs = only ? HomeApps.orderedInputs(this) : null;
         WindowManager.LayoutParams lp = getWindow().getAttributes();
-        if (only) {
+        if (side) {
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.x = Math.round(MARGIN * k);
+            lp.y = Math.round(MARGIN * k);
+            lp.width = Math.round(SIDE_W * k);
+            lp.height = dm.heightPixels - 2 * Math.round(MARGIN * k);
+            lp.flags |= WindowManager.LayoutParams.FLAG_DIM_BEHIND;
+            lp.dimAmount = SIDE_DIM;
+        } else if (only) {
             int rows = Math.max(1, Math.min(inputs.size(), PanelView.ROWS_VISIBLE));
             lp.gravity = Gravity.TOP | Gravity.END;
             lp.x = Math.round(POP_RIGHT * k);
@@ -94,7 +115,7 @@ public class QuickPanelActivity extends Activity {
         getWindow().setAttributes(lp);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         overridePendingTransition(0, 0);   // the panel springs in by itself
-        view = new PanelView(this, k, tiles(), inputs);
+        view = new PanelView(this, k, tiles(), inputs, side ? sidebar() : null);
         setContentView(view);
     }
 
@@ -114,6 +135,41 @@ public class QuickPanelActivity extends Activity {
             new Tile(Ui.tr("Accessibility"), "accessibility", 0xFF30D158, new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
             new Tile(Ui.tr("Settings"), "settings", 0xFF8E8E9A, new Intent(Settings.ACTION_SETTINGS)),
         };
+    }
+
+    /**
+     * The sidebar's rows: who is watching (OK: "Who's watching?"), Home, Apps, then the home screen's top buttons as
+     * they are set (Live TV or the input it opens, HDMI Inputs, Settings), and the store last.
+     */
+    private List<HomeApps.Item> sidebar() {
+        List<HomeApps.Item> rows = new ArrayList<>();
+        Profiles.Profile p = Profiles.active(this);
+        rows.add(HomeApps.action(HomeApps.SETTINGS, SIDE_PROFILE, p == null ? Ui.tr("Who's watching?") : p.name, "person"));
+        rows.add(HomeApps.action(HomeApps.SETTINGS, SIDE_HOME, Ui.tr("Home"), "home"));
+        rows.add(HomeApps.action(HomeApps.ALL_APPS, SIDE_APPS, Ui.tr("Apps"), "apps"));
+        for (HomeApps.Item it : HomeApps.topButtons(this)) {
+            if (it.kind != HomeApps.RECENTS && !HomeApps.TOP_STORE.equals(it.key)) rows.add(it);
+        }
+        String store = HomeApps.storePackage(this);
+        if (store != null) {
+            HomeApps.Item it = HomeApps.action(HomeApps.APP, SIDE_STORE, Ui.tr("Get apps"), "store");
+            it.pkg = store;
+            rows.add(it);
+        }
+        return rows;
+    }
+
+    /** A sidebar row's chip color, as the quick settings tiles have theirs. */
+    private static int sideColor(HomeApps.Item it) {
+        if (SIDE_HOME.equals(it.key)) return 0xFF0A84FF;
+        if (SIDE_APPS.equals(it.key)) return 0xFF5E5CE6;
+        if (SIDE_STORE.equals(it.key)) return 0xFF30D158;
+        switch (it.kind) {
+            case HomeApps.LIVE_TV:
+            case HomeApps.INPUT: return 0xFFFF9F0A;
+            case HomeApps.INPUTS: return 0xFF30B0C7;
+            default: return 0xFF8E8E9A;
+        }
     }
 
     /** The Settings button again (RemoteKeys starts this activity a second time): closes the panel. */
@@ -167,6 +223,8 @@ public class QuickPanelActivity extends Activity {
     private final class PanelView extends View {
         private static final float PAD = 40, GAP = 14, TILE_H = 132, GRID_TOP = 184, ROW_H = 76, ROW_GAP = 10,
                 CARD_R = 46, TILE_R = 30, CHIP_R = 25, SYMBOL = 24;
+        /** The sidebar: the profile row (taller, with the avatar), then the rows, and a line over the last one. */
+        private static final float SIDE_PAD = 22, PROFILE_H = 104, SIDE_AVATAR = 64, SIDE_RULE = 28;
         /** The popover: no clock and no title (the HDMI button's label above it says what it is), a slim inset. */
         private static final float POP_INSET = 22, POP_CARD_R = 46;   // concentric: the rows' 24 + the inset; the lens glow (21) fits inside
         private static final int ROWS_VISIBLE = 6;
@@ -176,6 +234,11 @@ public class QuickPanelActivity extends Activity {
         private final float k;
         private final Tile[] tiles;
         private final boolean inputsOnly;   // the HDMI button's popover: no clock, no tiles, no title
+        private final List<HomeApps.Item> side;   // non-null: the sidebar, these rows in place of the clock and tiles
+        private final int[] sideColors;
+        private int sideFocus;
+        private Bitmap avatar;   // who is watching, in the sidebar's first row
+        private BitmapShader avatarShader;
         private final float inset, cardR, rowsTop;
         private List<HomeApps.Item> inputs;   // non-null: the Inputs list is showing (or fading out)
         private boolean inputsOpen, closing;
@@ -228,14 +291,22 @@ public class QuickPanelActivity extends Activity {
             }
         };
 
-        PanelView(Context c, float k, Tile[] tiles, List<HomeApps.Item> only) {
+        PanelView(Context c, float k, Tile[] tiles, List<HomeApps.Item> only, List<HomeApps.Item> side) {
             super(c);
             this.k = k;
             this.tiles = tiles;
+            this.side = side;
             inputsOnly = only != null;
+            sideColors = new int[side == null ? 0 : side.size()];
+            for (int i = 0; i < sideColors.length; i++) sideColors[i] = sideColor(side.get(i));
+            Profiles.Profile who = side == null ? null : Profiles.active(c);
+            if (who != null) {
+                avatar = Profiles.avatar(c, who.avatar, Math.round(SIDE_AVATAR * k));
+                if (avatar != null) avatarShader = new BitmapShader(avatar, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+            }
             inset = inputsOnly ? POP_INSET : PAD;
             cardR = inputsOnly ? POP_CARD_R : CARD_R;
-            rowsTop = inputsOnly ? POP_INSET : GRID_TOP + 58;
+            rowsTop = inputsOnly ? POP_INSET : side != null ? SIDE_PAD + 74 : GRID_TOP + 58;
             if (inputsOnly) {
                 inputs = only;
                 inputsOpen = true;
@@ -257,19 +328,29 @@ public class QuickPanelActivity extends Activity {
             spoken = new Spoken(this, new Spoken.Source() {
                 @Override public void items(List<Integer> out) {
                     if (!inputsOpen) {
-                        for (int i = 0; i < tiles.length; i++) out.add(i + 1);
+                        int n = side != null ? side.size() : tiles.length;
+                        for (int i = 0; i < n; i++) out.add(i + 1);
                         return;
                     }
                     int first = firstRow();
                     for (int i = first; i < Math.min(inputs.size(), first + ROWS_VISIBLE); i++) out.add(ROW_IDS + i + 1);
                 }
                 @Override public String text(int id) {
+                    if (id <= ROW_IDS && side != null) return id - 1 < side.size() ? side.get(id - 1).label : "";
                     if (id <= ROW_IDS) return id - 1 < tiles.length ? tiles[id - 1].label : "";
                     int i = id - ROW_IDS - 1;
                     if (inputs == null || i >= inputs.size()) return "";
                     return inputs.get(i).label + ", " + Ui.trf("{i} of {n}", "i", i + 1, "n", inputs.size());
                 }
                 @Override public boolean bounds(int id, Rect out) {
+                    if (id <= ROW_IDS && side != null) {
+                        int i = id - 1;
+                        if (inputsOpen || i >= side.size()) return false;
+                        float y = sideTop(i);
+                        out.set(Math.round(SIDE_PAD * k), Math.round(y), Math.round(getWidth() - SIDE_PAD * k),
+                                Math.round(y + sideH(i)));
+                        return true;
+                    }
                     if (id <= ROW_IDS) {
                         int i = id - 1;
                         if (inputsOpen || i >= tiles.length) return false;
@@ -283,9 +364,12 @@ public class QuickPanelActivity extends Activity {
                     out.set(Math.round(inset * k), Math.round(y), Math.round(getWidth() - inset * k), Math.round(y + ROW_H * k));
                     return true;
                 }
-                @Override public int focused() { return inputsOpen ? ROW_IDS + inputFocus + 1 : focus + 1; }
+                @Override public int focused() {
+                    return inputsOpen ? ROW_IDS + inputFocus + 1 : (side != null ? sideFocus : focus) + 1;
+                }
                 @Override public void focus(int id) {
                     if (id > ROW_IDS) inputFocus = id - ROW_IDS - 1;
+                    else if (side != null) sideFocus = id - 1;
                     else focus = id - 1;
                     aimLens(false);
                     invalidate();
@@ -294,6 +378,7 @@ public class QuickPanelActivity extends Activity {
             });
             atop.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP));
             for (Tile t : tiles) Symbols.warm(c, t.symbol, SYMBOL * k);
+            if (side != null) for (HomeApps.Item it : side) Symbols.warm(c, it.symbol, SYMBOL * k);
             Symbols.warm(c, "tv", SYMBOL * k);
             show.target = 1;
         }
@@ -305,8 +390,10 @@ public class QuickPanelActivity extends Activity {
         @Override protected void onSizeChanged(int w, int h, int oldw, int oldh) {
             card.set(0, 0, w, h);
             // ~95% opaque: with no blur behind it, the glass has to hold the text on its own, over a white or black screen.
-            tint = night ? new LinearGradient(0, 0, 0, h, 0xF22C2C30, 0xF71C1C1E, Shader.TileMode.CLAMP)
-                    : new LinearGradient(0, 0, 0, h, 0xF7FBFBFD, 0xF2EBEBF0, Shader.TileMode.CLAMP);
+            // The sidebar fully: it covers the home screen's own text, which would show through as noise.
+            int o = side != null ? 0xFF000000 : 0;
+            tint = night ? new LinearGradient(0, 0, 0, h, 0xF22C2C30 | o, 0xF71C1C1E | o, Shader.TileMode.CLAMP)
+                    : new LinearGradient(0, 0, 0, h, 0xF7FBFBFD | o, 0xF2EBEBF0 | o, Shader.TileMode.CLAMP);
             sheen = new LinearGradient(0, 0, 0, h * 0.42f, night ? 0x1FFFFFFF : 0x66FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP);
             cardRim = new LinearGradient(0, 0, w, h, new int[] {0xB3FFFFFF, 0x1AFFFFFF, 0x14FFFFFF, 0x66FFFFFF},
                     new float[] {0, 0.35f, 0.65f, 1}, Shader.TileMode.CLAMP);
@@ -361,6 +448,11 @@ public class QuickPanelActivity extends Activity {
                 y = rowTop(inputFocus);
                 w = getWidth() - 2 * inset * k;
                 h = ROW_H * k;
+            } else if (side != null) {
+                x = SIDE_PAD * k;
+                y = sideTop(sideFocus);
+                w = getWidth() - 2 * SIDE_PAD * k;
+                h = sideH(sideFocus);
             } else {
                 x = tileX[focus];
                 y = tileY[focus];
@@ -397,6 +489,17 @@ public class QuickPanelActivity extends Activity {
             return rowsTop * k + (i - firstRow()) * (ROW_H + ROW_GAP) * k;
         }
 
+        /** A sidebar row's top: the profile first, the others under it, the store at the bottom on its own. */
+        private float sideTop(int i) {
+            if (i == 0) return SIDE_PAD * k;
+            if (SIDE_STORE.equals(side.get(i).key)) return getHeight() - (SIDE_PAD + ROW_H) * k;
+            return (SIDE_PAD + PROFILE_H + 18 + (i - 1) * (ROW_H + ROW_GAP)) * k;
+        }
+
+        private float sideH(int i) {
+            return (i == 0 ? PROFILE_H : ROW_H) * k;
+        }
+
         @Override protected void onDraw(Canvas c) {
             long now = SystemClock.uptimeMillis();
             float dt = lastFrame == 0 ? 0.016f : Math.min(0.05f, (now - lastFrame) / 1000f);
@@ -414,12 +517,18 @@ public class QuickPanelActivity extends Activity {
             c.save();
             if (inputsOnly) c.translate(0, -(1 - s) * 24 * k);   // the popover drops in from its button
             else c.translate(-(1 - s) * (getWidth() + MARGIN * k), 0);
-            int alpha = Math.round(255 * Math.min(1, s * 1.4f));
-            c.saveLayerAlpha(card, alpha);
+            // An offscreen layer costs a full-size pass on a TV's GPU each frame: only while the panel fades. The sidebar
+            // only slides (40% janky frames on a MiTV-MSSP3 with the layers).
+            int alpha = side != null ? 255 : Math.round(255 * Math.min(1, s * 1.4f));
+            if (alpha < 255) c.saveLayerAlpha(card, alpha);
+            else c.save();
             drawGlass(c);
-            if (!inputsOnly) drawHeader(c);
+            if (!inputsOnly && side == null) drawHeader(c);
             float p = page.value;
-            if (p < 0.999f) drawTiles(c, 1 - p);
+            if (p < 0.999f) {
+                if (side != null) drawSide(c, 1 - p);
+                else drawTiles(c, 1 - p);
+            }
             if (inputs != null && p > 0.001f) drawInputs(c, p);
             c.restore();
             c.restore();
@@ -433,6 +542,10 @@ public class QuickPanelActivity extends Activity {
         /** Tinted glass with faint light inside, a sheen at the top and a bright rim. */
         private void drawGlass(Canvas c) {
             float r = cardR * k;
+            if (side != null) {   // opaque glass: the light can go straight on it, no layer to keep it inside
+                drawOpaqueGlass(c, r);
+                return;
+            }
             c.saveLayer(card, layer);
             fill.setAlpha(255);   // a shader is still scaled by the paint's alpha, which the last tile left low
             fill.setShader(tint);
@@ -448,6 +561,22 @@ public class QuickPanelActivity extends Activity {
             }
             atop.setShader(null);
             c.restore();
+            fill.setShader(sheen);
+            c.drawRoundRect(card, r, r, fill);
+            fill.setShader(null);
+            rim.setStrokeWidth(1.6f * k);
+            rim.setShader(cardRim);
+            rect.set(card);
+            rect.inset(0.8f * k, 0.8f * k);
+            c.drawRoundRect(rect, r, r, rim);
+            rim.setShader(null);
+        }
+
+        /** The sidebar's glass: the same tint, sheen and rim, without the light inside (it would need a layer). */
+        private void drawOpaqueGlass(Canvas c, float r) {
+            fill.setAlpha(255);
+            fill.setShader(tint);
+            c.drawRoundRect(card, r, r, fill);
             fill.setShader(sheen);
             c.drawRoundRect(card, r, r, fill);
             fill.setShader(null);
@@ -496,7 +625,7 @@ public class QuickPanelActivity extends Activity {
         private void drawInputs(Canvas c, float a) {
             int saved = c.saveLayerAlpha(card, Math.round(255 * a));
             c.translate(0, (1 - a) * 24 * k);
-            if (!inputsOnly) c.drawText(inputsTitle, PAD * k, (GRID_TOP + 30) * k, title);
+            if (!inputsOnly) c.drawText(inputsTitle, PAD * k, (rowsTop - 28) * k, title);
             if (inputs.isEmpty()) {
                 c.drawText(noInputs, inset * k, (rowsTop + 42) * k, empty);
                 c.restoreToCount(saved);
@@ -522,6 +651,54 @@ public class QuickPanelActivity extends Activity {
                         it.symbol != null ? it.symbol : "hdmi", on);
                 rowLabel.setColor(Ui.alpha(mix(ink, focusInk, on), Math.max(dim, on)));
                 c.drawText(it.label, inset * k + 92 * k, y + ROW_H * k / 2 + Ui.halfCap(rowLabel), rowLabel);
+            }
+            c.restoreToCount(saved);
+        }
+
+        /**
+         * The sidebar: one glass row each, the lens on the focused one; the first row is who is watching (their avatar
+         * and name), the store sits last under a thin line, quieter than the rest.
+         */
+        private void drawSide(Canvas c, float a) {
+            int saved = a < 0.999f ? c.saveLayerAlpha(card, Math.round(255 * a)) : c.save();
+            c.translate(0, (1 - a) * -24 * k);
+            float r = 24 * k, x = SIDE_PAD * k, w = getWidth() - 2 * SIDE_PAD * k;
+            if (!inputsOpen) drawLens(c, r);
+            for (int i = 0; i < side.size(); i++) {
+                HomeApps.Item it = side.get(i);
+                float y = sideTop(i), h = sideH(i), cy = y + h / 2;
+                float on = Math.max(0, 1 - Math.abs(lensY.value - y) / h);   // rows are stacked: by height, not width
+                boolean store = SIDE_STORE.equals(it.key);
+                if (store) {
+                    rim.setStrokeWidth(1f * k);
+                    rim.setColor(Ui.alpha(ink, 0.14f));
+                    c.drawLine(x + 24 * k, y - SIDE_RULE * k / 2, x + w - 24 * k, y - SIDE_RULE * k / 2, rim);
+                }
+                float textX = x + 92 * k;
+                if (i == 0) {
+                    float ar = SIDE_AVATAR * k / 2, ax = x + 16 * k + ar;
+                    if (avatar != null) {
+                        rect.set(ax - ar, cy - ar, ax + ar, cy + ar);
+                        float sx = rect.width() / avatar.getWidth(), sy = rect.height() / avatar.getHeight();
+                        c.save();
+                        c.translate(rect.left, rect.top);
+                        c.scale(sx, sy);
+                        fill.setAlpha(255);
+                        fill.setShader(avatarShader);
+                        c.drawCircle(avatar.getWidth() / 2f, avatar.getHeight() / 2f, avatar.getWidth() / 2f, fill);
+                        fill.setShader(null);
+                        c.restore();
+                    } else {
+                        drawChip(c, ax, cy, sideColors[i], it.symbol, on);
+                    }
+                    textX = ax + ar + 22 * k;
+                    title.setColor(mix(ink, focusInk, on));
+                    c.drawText(it.label, textX, cy + Ui.halfCap(title), title);
+                    continue;
+                }
+                drawChip(c, x + 46 * k, cy, sideColors[i], it.symbol, on);
+                rowLabel.setColor(Ui.alpha(mix(ink, focusInk, on), store ? Math.max(0.7f, on) : 1));
+                c.drawText(it.label, textX, cy + Ui.halfCap(rowLabel), rowLabel);
             }
             c.restoreToCount(saved);
         }
@@ -553,7 +730,7 @@ public class QuickPanelActivity extends Activity {
             float w = lensW.value * (1 + stretchX - stretchY * 0.5f) * (1 - 0.04f * press.value);
             float h = lensH.value * (1 + stretchY - stretchX * 0.5f) * (1 - 0.04f * press.value);
             float cx = lensX.value + lensW.value / 2, cy = lensY.value + lensH.value / 2;
-            int accent = inputsOpen ? 0xFF30B0C7 : tiles[focus].color;
+            int accent = inputsOpen ? 0xFF30B0C7 : side != null ? sideColors[sideFocus] : tiles[focus].color;
             for (int i = 3; i >= 1; i--) {
                 float g = i * 7 * k;
                 rect.set(cx - w / 2 - g, cy - h / 2 - g, cx + w / 2 + g, cy + h / 2 + g);
@@ -597,6 +774,31 @@ public class QuickPanelActivity extends Activity {
             rim.setColor(Ui.alpha(0xFFFFFFFF, 0.35f + 0.3f * on));
             c.drawCircle(cx, cy, r - 0.5f * k, rim);
             Symbols.draw(getContext(), c, symbol, cx, cy, SYMBOL * k, 0xFFFFFFFF);
+        }
+
+        /** OK on a sidebar row: the same as its button on the home screen; Inputs goes one level in. */
+        private void selectSide(HomeApps.Item it) {
+            Context c = getContext();
+            if (SIDE_HOME.equals(it.key)) {
+                close();
+            } else if (SIDE_PROFILE.equals(it.key)) {
+                startActivity(new Intent(c, WhoActivity.class));
+                finish();
+            } else if (SIDE_APPS.equals(it.key)) {
+                startActivity(new Intent(c, HomeActivity.class).putExtra(HomeActivity.EXTRA_ALL_APPS, true)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                finish();
+            } else if (it.kind == HomeApps.INPUTS) {
+                inputs = HomeApps.orderedInputs(c);
+                inputsOpen = true;
+                inputFocus = startRow(inputs);
+                page.target = 1;
+                aimLens(false);
+                invalidate();
+                spoken.focusMoved();
+            } else if (HomeApps.open(QuickPanelActivity.this, it, this, 0, 0, getWidth(), getHeight())) {
+                finish();
+            }
         }
 
         boolean onKey(KeyEvent e) {
@@ -643,7 +845,16 @@ public class QuickPanelActivity extends Activity {
         }
 
         private void move(int code) {
-            if (inputsOpen) {
+            if (side != null && !inputsOpen) {
+                if (code == KeyEvent.KEYCODE_DPAD_RIGHT) {   // back to the home screen, as on Apple TV
+                    close();
+                    return;
+                }
+                int before = sideFocus;
+                if (code == KeyEvent.KEYCODE_DPAD_UP) sideFocus = Math.max(0, sideFocus - 1);
+                if (code == KeyEvent.KEYCODE_DPAD_DOWN) sideFocus = Math.min(side.size() - 1, sideFocus + 1);
+                if (sideFocus == before) return;
+            } else if (inputsOpen) {
                 int before = inputFocus;
                 if (code == KeyEvent.KEYCODE_DPAD_UP) inputFocus = Math.max(0, inputFocus - 1);
                 if (code == KeyEvent.KEYCODE_DPAD_DOWN) inputFocus = Math.min(inputs.size() - 1, inputFocus + 1);
@@ -667,6 +878,10 @@ public class QuickPanelActivity extends Activity {
             if (inputsOpen) {
                 if (inputs.isEmpty()) return;
                 if (HomeApps.open(QuickPanelActivity.this, inputs.get(inputFocus), this, 0, 0, getWidth(), getHeight())) finish();
+                return;
+            }
+            if (side != null) {
+                selectSide(side.get(sideFocus));
                 return;
             }
             if (focus == INPUTS) {

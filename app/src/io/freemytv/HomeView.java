@@ -805,6 +805,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** The round buttons at the top right (Settings > Top Buttons), with their names in the current language. */
     private void setLightButtons(List<HomeApps.Item> list) {
+        if (Config.SIDEBAR) list = new ArrayList<>();   // they are in the sidebar
         if (reorderTop) cancelReorder(true);
         lightButtons.clear();
         lightButtons.addAll(list);
@@ -1060,6 +1061,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (updateClock()) {
             layoutStatus();
             status.invalidate();
+            if (Config.SIDEBAR) heroLayer.invalidate();   // the time at the top left
             if (hero != null && hero.clock) {
                 refreshHero(false);
                 heroLayer.invalidate();
@@ -2047,6 +2049,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void setDrawerItems(List<HomeApps.Item> list) {
+        if (Config.SIDEBAR) list = new ArrayList<>();   // inputs in the sidebar, the weather beside the clock
         int inputs = 0;
         while (inputs < list.size() && (list.get(inputs).kind == HomeApps.INPUT || list.get(inputs).kind == HomeApps.LIVE_TV)) inputs++;
         boolean same = list.size() == drawerItems.size();
@@ -2519,7 +2522,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private boolean inputsOnResume;
 
+    /** The sidebar (QuickPanelActivity), over the home screen, which stays where it is. */
+    private void openSidebar() {
+        click.open();
+        activity.startActivity(new Intent(activity, QuickPanelActivity.class).putExtra(QuickPanelActivity.EXTRA_SIDEBAR, true));
+    }
+
     private void openInputs() {
+        if (Config.SIDEBAR) {   // no drawer: the inputs popover, as the HDMI button had it
+            activity.startActivity(new Intent(activity, QuickPanelActivity.class).putExtra(QuickPanelActivity.EXTRA_INPUTS, true));
+            return;
+        }
         openDrawer();
         for (int i = 0; i < drawerItems.size(); i++) {
             if (drawerItems.get(i).kind == HomeApps.INPUT) {
@@ -3180,6 +3193,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_SHELF:
                 if (dx != 0) {
                     int next = Math.max(0, Math.min(shelf.size() - 1, shelfIndex + dx));
+                    if (next == shelfIndex && dx < 0) {   // Left at the left edge: the sidebar
+                        openSidebar();
+                        return;
+                    }
                     if (next == shelfIndex) return;
                     shelfIndex = next;
                 } else if (dy < 0) {
@@ -3351,8 +3368,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             it = drawerItems.get(drawerIndex);
             r = drawerRects[drawerIndex];
         } else if (zone == Z_PROFILE) {
-            click.open();
-            getContext().startActivity(new Intent(getContext(), WhoActivity.class));
+            openSidebar();   // its first row is who is watching: a second OK switches
             return;
         } else if (zone == Z_TOP) {
             if (topIndex < 3) {
@@ -4773,8 +4789,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         drawProfile(c);
         String hello = picksMode() ? Ui.tr("For You") : Ui.tr("Continue Watching");
         float left = MARGIN * k + profileShift();
-        c.drawText(hello, left - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
-        titleRight = left + lTitle.measureText(hello);
+        if (Config.SIDEBAR && !picksMode()) {
+            // The time where the title was, the date beside it (the weather is the screensaver's), the row's name over
+            // its cards.
+            c.drawText(clockText, left - Ui.leftBearing(lTitle, clockText), L_TITLE_BASE * k, lTitle);
+            float x = left + lTitle.measureText(clockText) + 30 * k;
+            c.drawText(dateText, x, L_TITLE_BASE * k, lCardMeta);
+            titleRight = x + lCardMeta.measureText(dateText);
+            if (continueMode() && !watching.isEmpty()) {
+                c.drawText(hello, MARGIN * k - Ui.leftBearing(lTabOn, hello), (L_CARDS_TOP - 28) * k, lTabOn);
+            }
+        } else {
+            c.drawText(hello, left - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
+            titleRight = left + lTitle.measureText(hello);
+        }
         if (!picksMode()) {
             if (continueMode()) drawWatchRow(c);
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
@@ -4817,12 +4845,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return Recs.hasKey(getContext());
     }
 
-    private void drawClock(Canvas c) {
-        float x = MARGIN * k;
-        c.drawText(dateText, x - Ui.leftBearing(lDate, dateText), L_DATE_BASE * k, lDate);
-        c.drawText(clockText, x - Ui.leftBearing(lClock, clockText), L_CLOCK_BASE * k, lClock);
+    /** "1°  Cloudy   H:2° L:-2°", made again only when the forecast, the settings or the language change; "" without. */
+    private String weatherLine() {
         HomeData.Weather wx = data.weather;
-        if (!Prefs.weather() || Double.isNaN(wx.temp)) return;
+        if (!Prefs.weather() || Double.isNaN(wx.temp)) return "";
         if (data.weatherAt != weatherLineAt || Prefs.version != weatherLinePrefs || !Ui.language.equals(weatherLineLanguage)) {
             weatherLineAt = data.weatherAt;
             weatherLinePrefs = Prefs.version;
@@ -4830,6 +4856,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             weatherLine = HomeData.degrees(wx.temp) + "  " + HomeData.condition(wx.code, wx.isDay) + "   "
                     + HomeData.highLow(wx, "  ");
         }
+        return weatherLine;
+    }
+
+    private void drawClock(Canvas c) {
+        float x = MARGIN * k;
+        c.drawText(dateText, x - Ui.leftBearing(lDate, dateText), L_DATE_BASE * k, lDate);
+        c.drawText(clockText, x - Ui.leftBearing(lClock, clockText), L_CLOCK_BASE * k, lClock);
+        HomeData.Weather wx = data.weather;
+        if (weatherLine().isEmpty()) return;
         float size = 40 * k, base = L_WEATHER_BASE * k;
         String symbol = Symbols.weather(wx.code, wx.isDay);
         float sw = Symbols.width(getContext(), symbol, size);
@@ -5037,6 +5072,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_CARDS:
                 if (dx != 0) {
                     int next = Math.max(0, Math.min(cards.size() - 1, cardIndex + dx));
+                    if (next == cardIndex && dx < 0) {   // Left at the left edge: the sidebar
+                        openSidebar();
+                        return true;
+                    }
                     if (next == cardIndex) return true;
                     cardIndex = next;
                 } else if (dy < 0) {
@@ -5050,6 +5089,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case Z_WATCH:
                 if (dx != 0) {
                     int next = Math.max(0, Math.min(watching.size() - 1, watchIndex + dx));
+                    if (next == watchIndex && dx < 0) {   // Left at the left edge: the sidebar
+                        openSidebar();
+                        return true;
+                    }
                     if (next == watchIndex) return true;
                     watchIndex = next;
                 } else if (dy < 0) {
@@ -5069,6 +5112,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 break;
             case Z_PROFILE:
+                if (dx < 0) {   // the left edge: the sidebar
+                    openSidebar();
+                    return true;
+                }
                 if (dx > 0) {
                     if (picksMode()) {
                         zone = Z_TOP;

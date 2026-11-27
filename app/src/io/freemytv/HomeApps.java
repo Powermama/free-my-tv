@@ -478,6 +478,12 @@ final class HomeApps {
      * in the TV's settings is used as the label; without one, the name the device reports over HDMI-CEC ("PlayStation 5").
      * The icon follows what that name says the device is (see deviceSymbol).
      */
+    /**
+     * The name Android gives a CEC device until it answers with its own (Give OSD Name): its type and logical address,
+     * "Playback_3". A Sky Q box in standby never answers, and "Playback_3" named its input on a Xiaomi.
+     */
+    private static final Pattern CEC_PLACEHOLDER = Pattern.compile("(TV|Recorder|Tuner|Playback|AudioSystem|Reserved|Free)_\\d+");
+
     private static List<Item> inputs(Context c, boolean all) {
         List<Item> out = new ArrayList<>();
         TvInputManager tim = (TvInputManager) c.getSystemService(Context.TV_INPUT_SERVICE);
@@ -525,6 +531,7 @@ final class HomeApps {
             } catch (RuntimeException ignored) {
             }
             String reported = devices.containsKey(info.getId()) ? devices.get(info.getId()) : "";
+            if (CEC_PLACEHOLDER.matcher(reported).matches()) reported = "";   // the device didn't say its name
             String label = custom != null && custom.length() > 0 ? custom.toString()
                     : !reported.isEmpty() && connected ? reported : "HDMI " + number;
             String symbol = connected || custom != null ? deviceSymbol(label) : "hdmi";
