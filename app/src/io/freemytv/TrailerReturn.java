@@ -1,5 +1,6 @@
 package io.freemytv;
 
+import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.view.KeyEvent;
@@ -13,9 +14,10 @@ import java.nio.charset.StandardCharsets;
 /**
  * A trailer plays in the YouTube app (it starts fastest there), and Back from it comes back to the title's page: the
  * YouTube app would keep Back for its own home. The page leaves a note ("trailer-return": kind, id) as it opens
- * YouTube; the remote's key service (RemoteKeyService, its own process: so a file, not SharedPreferences) takes Back
- * while YouTube is in front and the note is there, and opens the page again. Leaving YouTube any other way drops the
- * note, and YouTube's Back is its own again.
+ * YouTube, with the task the page is in; the remote's key service (RemoteKeyService, its own process: so a file, not
+ * SharedPreferences) takes Back while YouTube is in front and the note is there: that same page comes to the front
+ * (its AppTask: no second page whose own Back could show YouTube again) and YouTube, behind it now, is closed.
+ * Leaving YouTube any other way drops the note, and YouTube's Back is its own again.
  */
 final class TrailerReturn {
     private TrailerReturn() {}
@@ -29,9 +31,9 @@ final class TrailerReturn {
     }
 
     /** The page opens its trailer in YouTube: Back is to come back to it. */
-    static void leave(Context c, String kind, int id) {
+    static void leave(Context c, String kind, int id, int task) {
         try (FileOutputStream out = new FileOutputStream(note(c))) {
-            out.write((kind + " " + id + " " + System.currentTimeMillis()).getBytes(StandardCharsets.US_ASCII));
+            out.write((kind + " " + id + " " + System.currentTimeMillis() + " " + task).getBytes(StandardCharsets.US_ASCII));
         } catch (IOException e) {
             AppLog.w("trailer return: " + e.getMessage());
         }
@@ -55,15 +57,33 @@ final class TrailerReturn {
         } catch (IOException ex) {
             return false;
         }
-        if (parts.length != 3 || System.currentTimeMillis() - Long.parseLong(parts[2]) > FOR_MS) {
+        if (parts.length != 4 || System.currentTimeMillis() - Long.parseLong(parts[2]) > FOR_MS) {
             drop(c);
             return false;
         }
         if (e.getAction() != KeyEvent.ACTION_UP) return true;   // the press too: YouTube never sees this Back
         drop(c);
-        c.startActivity(new Intent(c, TitleActivity.class).putExtra(TitleActivity.EXTRA_KIND, parts[0])
-                .putExtra(TitleActivity.EXTRA_ID, Integer.parseInt(parts[1])).putExtra(TitleActivity.EXTRA_AGAIN, true)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+        ActivityManager am = c.getSystemService(ActivityManager.class);
+        boolean moved = false;
+        int task = Integer.parseInt(parts[3]);
+        try {
+            for (ActivityManager.AppTask t : am.getAppTasks()) {   // this app's own tasks: the page's, if still there
+                if (t.getTaskInfo().id == task) {
+                    t.moveToFront();   // the very page it came from: its Back goes home
+                    moved = true;
+                    break;
+                }
+            }
+        } catch (RuntimeException ex) {
+            AppLog.w("trailer return: " + ex.getMessage());
+        }
+        if (!moved) {   // that task is gone: the page again, alone (its Back goes home)
+            c.startActivity(new Intent(c, TitleActivity.class).putExtra(TitleActivity.EXTRA_KIND, parts[0])
+                    .putExtra(TitleActivity.EXTRA_ID, Integer.parseInt(parts[1])).putExtra(TitleActivity.EXTRA_AGAIN, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+        }
+        // YouTube is behind now: closed, once the page is in front (it only stops what's in the background).
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> am.killBackgroundProcesses(YOUTUBE), 1500);
         return true;
     }
 }

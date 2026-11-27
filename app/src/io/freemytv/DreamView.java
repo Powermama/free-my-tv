@@ -768,12 +768,8 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
                     .setIncludePad(false).build();
             float originY = titleBase - t.getLineBaseline(t.getLineCount() - 1);
             float capTop = originY + t.getLineBaseline(0) - Ui.cap(titlePaint);
-            if (Config.SIDEBAR) {
-                // Where it plays, as its app's own banner, over the title; a few lines about it under: no list of dots.
-                drawService(c, s.pick, x, capTop - 30 * k);
-            } else {
-                c.drawText(Recs.periodLabel(), x, capTop - 30 * k, labelPaint);
-            }
+            // The sidebar build: just the title and a few lines about it (no label over it, no list of dots).
+            if (!Config.SIDEBAR) c.drawText(Recs.periodLabel(), x, capTop - 30 * k, labelPaint);
             c.save();
             c.translate(x - Ui.leftBearing(titlePaint, title), originY);
             t.draw(c);
@@ -794,29 +790,6 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             s.caption.endRecording();
         }
         s.caption.setPosition(0, 0, w, h);
-    }
-
-    /**
-     * The app it plays in, as that app's TV banner (the picture the TV's own launcher shows for it), small, with
-     * rounded corners, its bottom edge on `bottom`. Nothing when the app isn't on the TV.
-     */
-    private void drawService(Canvas c, Recs.Pick p, float x, float bottom) {
-        if (p.pkg == null) return;
-        android.graphics.drawable.Drawable banner;
-        try {
-            banner = getContext().getPackageManager().getApplicationBanner(p.pkg);
-        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-            return;
-        }
-        if (banner == null) return;
-        float bh = 54 * k, bw = bh * 16f / 9, r = 10 * k;
-        android.graphics.Path clip = new android.graphics.Path();
-        clip.addRoundRect(x, bottom - bh, x + bw, bottom, r, r, android.graphics.Path.Direction.CW);
-        c.save();
-        c.clipPath(clip);   // recorded once per caption, not per frame
-        banner.setBounds(Math.round(x), Math.round(bottom - bh), Math.round(x + bw), Math.round(bottom));
-        banner.draw(c);
-        c.restore();
     }
 
     /** The title whose caption shows, if it has an app on the TV; null for your photos and the clock. */

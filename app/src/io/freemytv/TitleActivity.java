@@ -38,6 +38,7 @@ public class TitleActivity extends Activity implements Recs.Listener {
     private Recs.Pick pick;
     private ImageView backdrop;
     private TextView meta, overview;
+    private LinearLayout badges;
     private LinearLayout skeleton, buttons;
     private ObjectAnimator breathing;
     private String trailerKey;
@@ -81,7 +82,11 @@ public class TitleActivity extends Activity implements Recs.Listener {
         title.setText(pick.title);
         title.setMaxLines(2);
         title.setEllipsize(TextUtils.TruncateAt.END);
-        column.addView(title, WhoActivity.wrap(0, 0, 0, Math.round(18 * k)));
+        column.addView(title, WhoActivity.wrap(0, 0, 0, Math.round(22 * k)));
+        // The scores and the age rating, as small outlined badges: read at a glance, apart from the line of facts.
+        badges = new LinearLayout(this);
+        badges.setVisibility(View.GONE);
+        column.addView(badges, WhoActivity.wrap(0, 0, 0, Math.round(20 * k)));
         meta = WhoActivity.text(this, k, 28, Ui.medium, 0xB3F5F5F7);
         meta.setVisibility(View.GONE);
         column.addView(meta, WhoActivity.wrap(0, 0, 0, Math.round(26 * k)));
@@ -214,16 +219,18 @@ public class TitleActivity extends Activity implements Recs.Listener {
             int seasons = d.optInt("number_of_seasons", 0);
             if (seasons > 0) parts.add(Ui.plural("plural|one:{n} season|other:{n} seasons", seasons));
         }
-        String age = ageRating(d, movie);
-        if (!age.isEmpty()) parts.add(Ui.trf("Rated {age}", "age", age));
+        badges.removeAllViews();
         double score = d.optDouble("vote_average", 0);
-        if (score > 0 && d.optInt("vote_count", 0) >= 20) parts.add("★ " + String.format(Ui.locale(), "%.1f", score));
+        if (score > 0 && d.optInt("vote_count", 0) >= 20) badge("★ " + String.format(Ui.locale(), "%.1f", score), "TMDB");
+        String age = ageRating(d, movie);
+        if (!age.isEmpty()) badge(Ui.trf("Rated {age}", "age", age), null);
+        badges.setVisibility(badges.getChildCount() == 0 ? View.GONE : View.VISIBLE);
         meta.setText(TextUtils.join("  ·  ", parts));
         meta.setVisibility(parts.isEmpty() ? View.GONE : View.VISIBLE);
         String about = d.optString("overview", "");
         overview.setText(about);
         overview.setVisibility(about.isEmpty() ? View.GONE : View.VISIBLE);
-        for (View v : new View[] {meta, overview}) {
+        for (View v : new View[] {badges, meta, overview}) {
             v.setAlpha(0f);
             v.animate().alpha(1f).setDuration(250).start();
         }
@@ -238,6 +245,27 @@ public class TitleActivity extends Activity implements Recs.Listener {
         }
         if (services.isEmpty() && pick.pkg != null) services.add(new String[] {Recs.serviceName(pick), pick.pkg});
         showButtons(services);
+    }
+
+    /** A badge: its value bright, its source quieter beside it ("★ 7.1  TMDB"), in a thin rounded outline. */
+    private void badge(String value, String source) {
+        LinearLayout b = new LinearLayout(this);
+        b.setGravity(Gravity.CENTER_VERTICAL);
+        GradientDrawable frame = new GradientDrawable();
+        frame.setCornerRadius(10 * k);
+        frame.setStroke(Math.max(1, Math.round(2 * k)), 0x66F5F5F7);
+        b.setBackground(frame);
+        int h = Math.round(16 * k), v = Math.round(7 * k);
+        b.setPadding(h, v, h, v);
+        TextView t = WhoActivity.text(this, k, 26, Ui.semibold, WhoActivity.INK);
+        t.setText(value);
+        b.addView(t);
+        if (source != null) {
+            TextView s = WhoActivity.text(this, k, 22, Ui.medium, 0x99F5F5F7);
+            s.setText(source);
+            b.addView(s, WhoActivity.wrap(Math.round(10 * k), 0, 0, 0));
+        }
+        badges.addView(b, WhoActivity.wrap(badges.getChildCount() == 0 ? 0 : Math.round(14 * k), 0, 0, 0));
     }
 
     /** The age rating for this country (FSK in Germany), if TMDB has one. */
@@ -281,7 +309,7 @@ public class TitleActivity extends Activity implements Recs.Listener {
      */
     private void openTrailer() {
         if (trailerKey == null) return;
-        TrailerReturn.leave(this, pick.kind, pick.id);
+        TrailerReturn.leave(this, pick.kind, pick.id, getTaskId());
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.youtube.com/watch?v=" + trailerKey))
                     .setPackage(TrailerReturn.YOUTUBE));
