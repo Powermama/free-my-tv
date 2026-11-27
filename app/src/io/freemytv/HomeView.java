@@ -126,7 +126,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static String[] tabs;
     private static int tabsGeneration = -1;
     private static final String[] TAB_KIND = {null, "movie", "tv"};
-    private static final int Z_TOP = 4, Z_CARDS = 5, Z_WATCH = 6;
+    private static final int Z_TOP = 4, Z_CARDS = 5, Z_WATCH = 6, Z_PROFILE = 12;
 
     private final Activity activity;
     private final Scene scene = new Scene();
@@ -180,6 +180,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Spring[] topFocus = new Spring[3 + HomeApps.MAX_TOP];
     private final RectF[] topRects = new RectF[3 + HomeApps.MAX_TOP];
     private final Spring[] cardFocus = new Spring[Recs.MAX_CARDS];
+    // The avatar in the top left corner: who is watching (Profiles), or a person before there are profiles. OK on it
+    // opens "Who's watching?" (WhoActivity).
+    private final Spring[] profileFocus = {new Spring(0.26f, 0.85f, 0)};
+    private final RectF profileRect = new RectF();
+    private final Paint profileRing = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private Bitmap profileImage;
+    private BitmapShader profileShader;
+    private String profileAvatar = "", profileName = "";
     /** How open (wide) each card is: 1 for the one at cardIndex, 0 for the others; the widths always add up to the same. */
     private final Spring[] cardOpen = new Spring[Recs.MAX_CARDS];
     /** Picks per tab (Prefs.cards()), read when the cards update, not on every frame. */
@@ -713,6 +721,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (!again) reload();
         updatePalette();
         updatePicks();
+        updateProfile();
         updateSleep();      // a timer just set in Settings shows at once, not at the next tick
         if (allAppsOnResume) {
             allAppsOnResume = false;
@@ -1004,7 +1013,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         boolean statusMoving = step(statusFocus, dt);
         boolean heroMoving = heroFocus.step(dt);
-        boolean topMoving = step(topFocus, dt) | topReorderFrame, cardsMoving = step(cardFocus, dt) | step(cardOpen, dt) | cardScroll.step(dt)
+        boolean topMoving = step(topFocus, dt) | step(profileFocus, dt) | topReorderFrame, cardsMoving = step(cardFocus, dt) | step(cardOpen, dt) | cardScroll.step(dt)
                 | step(watchFocus, dt) | watchScroll.step(dt);
         boolean tintMoving = tintMix.step(dt);
         if (tintMoving) {
@@ -1128,7 +1137,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void settleWhileSliding() {
         if (drawer.settled()) return;
         if (settle(drawerFocus)) drawerDirty = true;
-        if (settle(cardFocus) | settle(topFocus)) heroDirty = statusDirty = true;
+        if (settle(cardFocus) | settle(topFocus) | settle(profileFocus)) heroDirty = statusDirty = true;
         if (settle(statusFocus)) statusDirty = true;
         if (!heroFocus.settled()) {
             heroFocus.snap(heroFocus.target);
@@ -2427,6 +2436,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         heroFocus.target = !sheetOpen && zone == Z_HERO ? 1 : 0;
         if (snap) heroFocus.snap(heroFocus.target);
         boolean topChanged = aim(topFocus, !sheetOpen && zone == Z_TOP ? topIndex : -1, snap);
+        heroChanged |= aim(profileFocus, !sheetOpen && zone == Z_PROFILE ? 0 : -1, snap);
         heroChanged |= aim(cardFocus, !sheetOpen && zone == Z_CARDS ? cardIndex : -1, snap) | topChanged;
         heroChanged |= aim(cardOpen, cardIndex, snap);
         float scrollTo = Math.max(0, cardIndex - 2);
@@ -3340,6 +3350,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (drawerItems.isEmpty()) return;
             it = drawerItems.get(drawerIndex);
             r = drawerRects[drawerIndex];
+        } else if (zone == Z_PROFILE) {
+            click.open();
+            getContext().startActivity(new Intent(getContext(), WhoActivity.class));
+            return;
         } else if (zone == Z_TOP) {
             if (topIndex < 3) {
                 selectTab(topIndex);
@@ -3729,6 +3743,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             for (int i = 0; i < others.size(); i++) out.add(a11yId(GRID, i));
             return;
         }
+        if (profileShown()) out.add(a11yId(Z_PROFILE, 0));
         for (int i = picksMode() ? 0 : 3; i < 3 + lightButtons.size(); i++) out.add(a11yId(Z_TOP, i));
         for (int i = 0; i < Math.min(Recs.MAX_CARDS, cards.size()); i++) out.add(a11yId(Z_CARDS, i));
         if (continueMode()) for (int i = 0; i < watching.size(); i++) out.add(a11yId(Z_WATCH, i));
@@ -3751,6 +3766,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case GRID:
                 if (i >= others.size()) return "";
                 return label(others, i) + ", " + Ui.trf("{i} of {n}", "i", i + 1, "n", others.size());
+            case Z_PROFILE:
+                return profileName.isEmpty() ? Ui.tr("Who's watching?") : Ui.trf("{name}, switch profile", "name", profileName);
             case Z_TOP:
                 if (reordering && reorderTop && i == topIndex) {
                     return Ui.trf("Moving {app}, position {n} of {total}",
@@ -3805,6 +3822,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 dy = 0;
                 break;
             }
+            case Z_PROFILE:
+                if (!profileShown()) return false;
+                a11yRect.set(profileRect);
+                dy = heroLayer.getTranslationY();
+                break;
             case Z_TOP:
                 if (i >= 3 + lightButtons.size()) return false;
                 a11yRect.set(topRects[i]);
@@ -3868,6 +3890,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (sheetOpen) return others.isEmpty() ? -1 : a11yId(GRID, gridIndex);
         switch (zone) {
             case Z_TOP: return a11yId(Z_TOP, topIndex);
+            case Z_PROFILE: return a11yId(Z_PROFILE, 0);
             case Z_CARDS: return cardIndex < cards.size() ? a11yId(Z_CARDS, cardIndex) : -1;
             case Z_WATCH: return watchIndex < watching.size() ? a11yId(Z_WATCH, watchIndex) : -1;
             case Z_SHELF: return shelf.isEmpty() ? -1 : a11yId(Z_SHELF, shelfIndex);
@@ -3939,6 +3962,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             case WIDGETS:
                 if (!widgets().contains(i)) return;
                 widgetIndex = i;
+                break;
+            case Z_PROFILE:
+                if (!profileShown()) return;
+                if (drawerOpen) closeDrawer();
                 break;
             case Z_TOP:
                 if (i >= 3 + lightButtons.size() || (i < 3 && !picksMode())) return;
@@ -4038,7 +4065,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (lTab == null) return;
         // Text tabs; the focus pill extends 26 px past the text (the first tab's text starts at the margin).
         float pad = 26 * k, tabTop = L_TABBAR_TOP * k, tabBottom = (L_TABBAR_TOP + L_TABBAR_H) * k;
-        float x = MARGIN * k - pad;
+        float pb = L_BUTTON * k, pcy = L_BUTTON_CY * k;
+        profileRect.set(MARGIN * k, pcy - pb / 2, MARGIN * k + pb, pcy + pb / 2);
+        snap(profileRect);
+        float x = MARGIN * k - pad + profileShift();
         for (int i = 0; i < 3; i++) {
             float tw = Math.max(lTabOn.measureText(tabs()[i]), lTab.measureText(tabs()[i]));
             topRects[i].set(x, tabTop, x + tw + 2 * pad, tabBottom);
@@ -4156,7 +4186,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         watching = list;
         watchTitles = null;
         watchIndex = Math.min(watchIndex, Math.max(0, list.size() - 1));
-        boolean lost = zone == Z_WATCH && list.isEmpty() || !picksMode() && (zone == Z_CARDS || zone == Z_TOP && topIndex < 3);
+        boolean lost = zone == Z_WATCH && list.isEmpty() || !picksMode() && (zone == Z_CARDS || zone == Z_TOP && topIndex < 3)
+                || zone == Z_PROFILE && !profileShown();
         if (modeChanged || lost) zone = Z_SHELF;
         if (modeChanged) {
             updateCards();
@@ -4672,6 +4703,65 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (night > 0.001f) drawImage(c, b.nightImage, alpha * night);
     }
 
+    /** The corner avatar shows with the title or the tabs, not on the clock. */
+    private boolean profileShown() {
+        return !clockMode();
+    }
+
+    /** How far the title and the tabs move right for the avatar. */
+    private float profileShift() {
+        return profileShown() ? (L_BUTTON + 28) * k : 0;
+    }
+
+    /** Who is watching now: their avatar in the corner, read again when another one was picked. */
+    private void updateProfile() {
+        Profiles.Profile p = Profiles.active(getContext());
+        String avatar = p == null ? "" : p.avatar;
+        profileName = p == null ? "" : p.name;
+        if (avatar.equals(profileAvatar)) return;
+        profileAvatar = avatar;
+        profileImage = avatar.isEmpty() ? null : Profiles.avatar(getContext(), avatar, Math.round(L_BUTTON * 1.1f * k));
+        profileShader = profileImage == null ? null
+                : new BitmapShader(profileImage, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+        heroDirty = true;
+    }
+
+    /** As the round buttons at the right: grows and rings white when focused, with the name under it. */
+    private void drawProfile(Canvas c) {
+        RectF r = profileRect;
+        float f = Ui.clamp(profileFocus[0].value), rad = r.width() / 2 * (1 + 0.1f * f);
+        cell.set(r.centerX() - rad, r.centerY() - rad, r.centerX() + rad, r.centerY() + rad);
+        tmp.set(cell);
+        tmp.offset(0, (6 + 8 * f) * k);
+        shadow.setColor(Ui.alpha(0xFF000000, tone(0.1f, 0.3f) + tone(0.14f, 0.2f) * f));
+        shadows.draw(c, tmp, rad, SHADOW_BLUR * k, shadow);
+        if (profileImage != null) {
+            roundImage(c, profileImage, profileShader, cell, rad);
+            if (f > 0.01f) {
+                profileRing.setStyle(Paint.Style.STROKE);
+                profileRing.setStrokeWidth(4 * k);
+                profileRing.setColor(Ui.alpha(0xFFFFFFFF, f));
+                c.drawCircle(cell.centerX(), cell.centerY(), rad - 2 * k, profileRing);
+            }
+        } else {
+            scene.liquid(c, cell, rad, tone(glassLight(), SMOKE), tone(0.55f, 0.5f), tone(0.02f, 0.01f), 12 * k, 8 * k,
+                    tone(0.6f, 0.45f), 1 - f);
+            if (f > 0.01f) {
+                fill.setShader(null);
+                fill.setColor(Ui.alpha(0xFFFFFFFF, f));
+                c.drawCircle(cell.centerX(), cell.centerY(), rad, fill);
+            }
+            Symbols.draw(getContext(), c, "person", cell.centerX(), cell.centerY(), 27 * k * (1 + 0.1f * f),
+                    blend(tone(L_INK, 0xEBFFFFFF), L_INK, f));
+        }
+        if (f > 0.01f && !picksMode()) {   // with picks, the tabs are under it
+            String label = profileName.isEmpty() ? Ui.tr("Who's watching?") : profileName;
+            float x = Math.max(r.centerX(), MARGIN * k + lTip.measureText(label) / 2);
+            lTip.setAlpha(Math.round(255 * f));
+            c.drawText(label, x, r.bottom + (40 + 4 * f) * k, lTip);
+        }
+    }
+
     private void drawLightTop(Canvas c) {
         applyTone();
         if (clockMode()) {
@@ -4680,9 +4770,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
             return;
         }
+        drawProfile(c);
         String hello = picksMode() ? Ui.tr("For You") : Ui.tr("Continue Watching");
-        c.drawText(hello, MARGIN * k - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
-        titleRight = MARGIN * k + lTitle.measureText(hello);
+        float left = MARGIN * k + profileShift();
+        c.drawText(hello, left - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
+        titleRight = left + lTitle.measureText(hello);
         if (!picksMode()) {
             if (continueMode()) drawWatchRow(c);
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
@@ -4961,14 +5053,48 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (next == watchIndex) return true;
                     watchIndex = next;
                 } else if (dy < 0) {
-                    if (lightButtons.isEmpty()) return true;
-                    zone = Z_TOP;
-                    topIndex = 3;
+                    // Up to whichever is closer above: the avatar at the left, or the buttons at the right.
+                    watchRect(watchIndex, tmp);
+                    boolean left = profileShown() && (lightButtons.isEmpty()
+                            || Math.abs(tmp.centerX() - profileRect.centerX()) < Math.abs(tmp.centerX() - topRects[3].centerX()));
+                    if (left) {
+                        zone = Z_PROFILE;
+                    } else {
+                        if (lightButtons.isEmpty()) return true;
+                        zone = Z_TOP;
+                        topIndex = 3;
+                    }
                 } else {
                     zone = Z_SHELF;
                 }
                 break;
+            case Z_PROFILE:
+                if (dx > 0) {
+                    if (picksMode()) {
+                        zone = Z_TOP;
+                        topIndex = tab;
+                    } else if (!lightButtons.isEmpty()) {
+                        zone = Z_TOP;
+                        topIndex = 3;
+                    } else {
+                        return true;
+                    }
+                } else if (dy > 0) {
+                    if (picksMode() && !cards.isEmpty()) {
+                        zone = Z_CARDS;
+                        cardIndex = nearest(cardRects, cards.size(), profileRect.centerX());
+                    } else {
+                        zone = continueMode() && !watching.isEmpty() ? Z_WATCH : Z_SHELF;
+                    }
+                } else {
+                    return true;
+                }
+                break;
             case Z_TOP:
+                if (dx < 0 && topIndex == (picksMode() ? 0 : 3) && profileShown()) {   // the corner avatar, at the left
+                    zone = Z_PROFILE;
+                    break;
+                }
                 if (dx != 0 && !picksMode() && topIndex + dx < 3) return true;   // no tabs to the left
                 if (dy > 0 && !picksMode()) {
                     zone = continueMode() && !watching.isEmpty() ? Z_WATCH : Z_SHELF;

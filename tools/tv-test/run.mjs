@@ -22,20 +22,30 @@ const update = process.env.UPDATE_GOLDENS === "1";
 const HOME = "io.freemytv/.HomeActivity";
 const PANEL = "io.freemytv/.QuickPanelActivity";
 const SETTINGS = "io.freemytv/.SettingsActivity";
+const WHO = "io.freemytv/.WhoActivity";
 
 // Regions that change by themselves (1920×1080): left out of every comparison.
 const CLOCK_WEATHER = { x1: 60, y1: 290, x2: 1100, y2: 720 };      // date, clock, weather, prices
 const SETTINGS_LIVE = { x1: 1000, y1: 590, x2: 1900, y2: 1060 };   // measured numbers, notices with their age
+const WATCHING = { x1: 60, y1: 240, x2: 1860, y2: 680 };            // Continue Watching's cards, as the family watches
 
-// One walk, each step from where the last one left off. Home first: the top buttons from there are Up, then all the
-// way left (Live TV, or the HDMI input it opens).
+// One walk, each step from where the last one left off. The top row from Home, whatever the screen shows (the clock,
+// or Continue Watching's cards): Up three times, all the way right (Settings, the last), then back left to Live TV.
+const TOP = ["DPAD_UP", "DPAD_UP", "DPAD_UP", ...Array(6).fill("DPAD_RIGHT")];
+const LIVE = ["HOME", ...TOP, "DPAD_LEFT", "DPAD_LEFT"];
+const HOME_MASK = [CLOCK_WEATHER, WATCHING];
 const STEPS = [
-  { name: "home", keys: ["HOME"], expect: HOME, mask: [CLOCK_WEATHER] },
-  { name: "top-live-focus", keys: ["DPAD_UP", "DPAD_LEFT", "DPAD_LEFT", "DPAD_LEFT"], expect: HOME, mask: [CLOCK_WEATHER] },
-  { name: "hdmi-focus", keys: ["DPAD_RIGHT"], expect: HOME, mask: [CLOCK_WEATHER] },
-  { name: "hdmi-popover", keys: ["DPAD_CENTER"], expect: PANEL, mask: [CLOCK_WEATHER] },
-  { name: "hdmi-popover-closed", keys: ["BACK"], expect: HOME, mask: [CLOCK_WEATHER] },
+  { name: "home", keys: ["HOME"], expect: HOME, mask: HOME_MASK },
+  { name: "top-live-focus", keys: LIVE.slice(1), expect: HOME, mask: HOME_MASK },
+  { name: "hdmi-focus", keys: ["DPAD_RIGHT"], expect: HOME, mask: HOME_MASK },
+  { name: "hdmi-popover", keys: ["DPAD_CENTER"], expect: PANEL, mask: HOME_MASK },
+  { name: "hdmi-popover-closed", keys: ["BACK"], expect: HOME, mask: HOME_MASK },
   { name: "settings", keys: ["DPAD_RIGHT", "DPAD_CENTER"], expect: SETTINGS, mask: [SETTINGS_LIVE] },
+  // "Who's watching?": the avatar left of Live TV. Only looks: Back keeps whoever was watching.
+  { name: "profile-focus", keys: [...LIVE, "DPAD_LEFT"], expect: HOME, mask: HOME_MASK },
+  { name: "who", keys: ["DPAD_CENTER"], expect: WHO },
+  { name: "who-manage", keys: ["DPAD_DOWN", "DPAD_CENTER"], expect: WHO },
+  { name: "who-closed", keys: ["BACK", "BACK"], expect: HOME, mask: HOME_MASK },
 ];
 const SETTLE_MS = 700;   // the springs' longest move, after the screen is in front
 
@@ -98,6 +108,20 @@ function screenshot(to) {
 
 const num = (out, re) => +((out.match(re) || [])[1] || 0);
 
+// The monkey server takes the remote's keys while it runs: it must never outlive the test, however the test ends
+// (a TV left like that ignores the remote until it restarts).
+function stopMonkey() {
+  try {
+    if (monkey) monkey.destroy();
+    shell(`pkill -f "[c]om.android.commands.monkey"`);
+    adb("forward", "--remove", `tcp:${MONKEY_PORT}`);
+  } catch {
+    // the TV went away; its monkey ends with the adb connection
+  }
+  monkey = null;
+}
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => (stopMonkey(), process.exit(130)));
+
 async function main() {
   const started = Date.now();
   if (serial) execFileSync("adb", ["connect", serial], { stdio: "ignore" });
@@ -159,7 +183,7 @@ async function main() {
     memAvailableMB: Math.round(num(shell("cat /proc/meminfo"), /MemAvailable:\s+(\d+)/) / 1024),
   };
   if (monkey) monkey.end("quit\n");   // monkey closes without answering "quit"
-  if (monkey) adb("forward", "--remove", `tcp:${MONKEY_PORT}`);
+  stopMonkey();
   shell(`rm -f ${SHOT}`);
 
   const failed = results.filter((r) => r.status === "fail");
@@ -179,6 +203,7 @@ async function main() {
 }
 
 main().catch((e) => {
+  stopMonkey();
   console.error(e.message || e);
   process.exit(2);
 });

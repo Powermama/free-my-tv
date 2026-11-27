@@ -1,7 +1,10 @@
 package io.freemytv;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
@@ -49,6 +52,7 @@ public class HomeActivity extends Activity {
             return;
         }
         Ui.init(this);
+        registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF));
         home = new HomeView(this);
         setContentView(home);
         getWindow().setBackgroundDrawable(null);
@@ -103,6 +107,12 @@ public class HomeActivity extends Activity {
             return;
         }
         if (home != null) home.resume();
+        // After the last resume of a Home press: Xiaomi's remote sends one as a burst of 5 to 8, and each one brings
+        // the home screen back over a picker opened by the one before.
+        if (home != null) {
+            home.removeCallbacks(askWho);
+            if (Profiles.shouldAsk(this)) home.postDelayed(askWho, ASK_AFTER_MS);
+        }
         if (liveDark && home != null) {   // the screen came on with the home screen in front
             liveDark = false;
             home.removeCallbacks(powerOnLive);
@@ -144,12 +154,31 @@ public class HomeActivity extends Activity {
         else home.reset(true);
     }
 
+    private static final long ASK_AFTER_MS = 350;
+
+    /** "Who's watching?", if the home screen is still in front. */
+    private final Runnable askWho = () -> {
+        if (!resumed) return;
+        AppLog.w("profiles: asking who's watching");
+        startActivity(new Intent(this, WhoActivity.class));
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+    };
+
     /** When Home was last pressed, and how soon the second press counts (Settings > Home Settings). */
     private long lastHome;
     private static final long TWICE_MS = 700;
 
+    /** Standby (the screen going off; the screensaver keeps it on): "Who's watching?" at the next home screen. */
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent intent) {
+            Profiles.screenOff(c);
+        }
+    };
+
     @Override protected void onDestroy() {
+        if (home != null) unregisterReceiver(screenOff);
         if (home != null) {
+            home.removeCallbacks(askWho);
             home.removeCallbacks(powerOnLive);
             home.destroy();
         }

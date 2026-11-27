@@ -400,6 +400,15 @@ entries; its system pieces are in `PROTECTED`. USB debugging opens ADB on 5555 t
   started tvlauncher at wakes on a Philips TPM171E). `Capabilities.screensaver` (`stay_on_while_plugged_in`, read once) says whether
   Android can start ours at all: that Philips stays awake and runs its own from its system UI, burn-in protection that must
   not be turned off or raced (#451); the switch's texts leave the screensaver out there, and its rows are Unavailable.
+- Profiles ("Who's watching?", `Profiles`, `WhoActivity`, `ProfileActivity`, plain Android views in `:home`): a name
+  and an avatar each (`app/assets/avatars`, drawn once by `tools/make_avatars.py` with DiceBear and committed, so
+  nothing fetches them). The avatar in the home screen's top left corner opens the picker; without profiles it is a
+  person symbol and nothing else changes. The picker comes by itself only at a real power-on: a new `BOOT_COUNT`, or
+  standby, seen as `SCREEN_OFF` in `HomeActivity` or as time spent suspended since the pick (`elapsedRealtime` minus
+  `uptimeMillis` grew), which also counts while `:home` was killed. The screensaver suspends nothing and turns no screen
+  off, so it never comes in the middle of an evening. It opens 350 ms after the home screen's last resume (Xiaomi's
+  Home burst), from the next Home press when the TV wakes into another app. Back on it keeps the last person.
+  New and edited profiles go one step at a time: name, avatar, a last look with Save.
 - Settings rows that need something this TV lacks stay, dimmed as *Unavailable*: `SettingsActivity.need` names what a
   row needs, `Capabilities.missing` says why it's missing (once per screen), and OK on the row shows it in a toast.
 - The remote's app buttons (`RemoteKeys`, `RemoteKeyService`) use each brand's key codes: they run only on TCL,
