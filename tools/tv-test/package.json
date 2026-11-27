@@ -1,0 +1,13 @@
+{
+  "name": "freemytv-tv-test",
+  "private": true,
+  "description": "End-to-end checks on a real TV over adb: scripted remote presses, screenshots against approved goldens, jank and memory.",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs",
+    "update-goldens": "UPDATE_GOLDENS=1 node run.mjs"
+  },
+  "devDependencies": {
+    "odiff-bin": "4.5.0"
+  }
+}
