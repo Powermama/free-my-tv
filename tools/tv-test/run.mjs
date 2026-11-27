@@ -135,6 +135,9 @@ async function main() {
     }
     results.push(r);
   }
+  // Leave the TV as a person would find it: Settings back on its first page and closed (it stays alive in the
+  // background and would reopen where the walk left it).
+  for (let i = 0; i < 6 && front() !== HOME; i++) await keys(["BACK"]), await sleep(300);
 
   // Jank and memory: the shelf scrolled right and back, twice, on the home screen (its own process, :home).
   await keys(["HOME"]);
