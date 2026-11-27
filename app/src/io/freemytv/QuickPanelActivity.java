@@ -150,6 +150,8 @@ public class QuickPanelActivity extends Activity {
         for (HomeApps.Item it : HomeApps.topButtons(this)) {
             if (it.kind != HomeApps.RECENTS && !HomeApps.TOP_STORE.equals(it.key)) rows.add(it);
         }
+        // Recent Apps, to close what still runs: where the drawer held it (Xiaomi's remotes have no key for it).
+        if (!Prefs.recents().equals("off")) rows.add(HomeApps.action(HomeApps.RECENTS, HomeApps.TOP_RECENTS, Ui.tr("Recent Apps"), "recents"));
         String store = HomeApps.storePackage(this);
         if (store != null) {
             HomeApps.Item it = HomeApps.action(HomeApps.APP, SIDE_STORE, Ui.tr("Get apps"), "store");
@@ -168,6 +170,7 @@ public class QuickPanelActivity extends Activity {
             case HomeApps.LIVE_TV:
             case HomeApps.INPUT: return 0xFFFF9F0A;
             case HomeApps.INPUTS: return 0xFF30B0C7;
+            case HomeApps.RECENTS: return 0xFFBF5AF2;
             default: return 0xFF8E8E9A;
         }
     }
@@ -313,7 +316,7 @@ public class QuickPanelActivity extends Activity {
                 inputFocus = startRow(only);
                 page.snap(1);
             }
-            night = HomeData.get(c).isNight(System.currentTimeMillis());
+            night = Config.SIDEBAR || HomeData.get(c).isNight(System.currentTimeMillis());   // the page is always dark
             ink = night ? 0xFFFFFFFF : 0xFF1D1D1F;
             focusInk = night ? 0xFF1D1D1F : 0xFFFFFFFF;
             tileFill = night ? 0x17FFFFFF : 0x0D000000;
@@ -783,6 +786,10 @@ public class QuickPanelActivity extends Activity {
                 close();
             } else if (SIDE_PROFILE.equals(it.key)) {
                 startActivity(new Intent(c, WhoActivity.class));
+                finish();
+            } else if (it.kind == HomeApps.RECENTS) {
+                startActivity(new Intent(c, HomeActivity.class).putExtra(HomeActivity.EXTRA_RECENTS, true)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
                 finish();
             } else if (SIDE_APPS.equals(it.key)) {
                 startActivity(new Intent(c, HomeActivity.class).putExtra(HomeActivity.EXTRA_ALL_APPS, true)

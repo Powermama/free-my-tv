@@ -25,6 +25,8 @@ public class HomeActivity extends Activity {
     static final String EXTRA_ALL_APPS = "io.freemytv.ALL_APPS";
     /** Opens the inputs drawer (the remote's Input key while the stock inputs panel is off, RemoteKeys). */
     static final String EXTRA_INPUTS = "io.freemytv.INPUTS";
+    /** Opens Recent Apps (the sidebar's row). */
+    static final String EXTRA_RECENTS = "io.freemytv.RECENTS";
 
     /** The Apps key reaches us as ACTION_ALL_APPS (the system's way) or as our extra (RemoteKeys). */
     private static boolean wantsAllApps(Intent intent) {
@@ -145,6 +147,10 @@ public class HomeActivity extends Activity {
         }
         if (intent.getBooleanExtra(EXTRA_INPUTS, false)) {
             home.showInputs();
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_RECENTS, false)) {
+            home.showRecents();
             return;
         }
         long now = SystemClock.uptimeMillis();

@@ -126,7 +126,31 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static String[] tabs;
     private static int tabsGeneration = -1;
     private static final String[] TAB_KIND = {null, "movie", "tv"};
-    private static final int Z_TOP = 4, Z_CARDS = 5, Z_WATCH = 6, Z_PROFILE = 12;
+    private static final int Z_TOP = 4, Z_CARDS = 5, Z_WATCH = 6, Z_PROFILE = 12, Z_POSTERS = 13, Z_BANNER = 14;
+    // The page (sidebar=true), at 1080p: rows one under the other on a dark ground, as the Apple TV app has them. Up
+    // and Down go from row to row and the page follows, moving its layers (nothing is redrawn for it); each row keeps
+    // its own place sideways. Pictures are drawn at the size they were made for.
+    private static final float P_LEFT = 80, P_FIRST = 96, P_TITLE = 84, P_GAP = 36, P_POSTER_W = 240, P_POSTER_H = 360,
+            P_POSTER_GAP = 32, P_APP_H = 180, P_APP_GROW = 0.08f, P_POSTER_GROW = 0.06f, P_BANNER_H = 760,
+            P_UNDER_BANNER = 568;   // the first row rises into the banner's fade; the second one's posters peek in
+    /** The page's ground, and what the banner's picture fades into. */
+    private static final int P_GROUND = 0xFF0E0E10;
+    private static final int R_BANNER = 0, R_WATCH = 1, R_MOVIES = 2, R_SHOWS = 3, R_APPS = 4, ROWS = 5, ROW_MAX = 12;
+    private final float[] rowTop = new float[ROWS];
+    private final boolean[] rowOn = new boolean[ROWS];
+    private float pageH = 1080;
+    private final Spring pageScroll = new Spring(0.3f, 0.92f, 0);
+    private boolean pageMoved;   // a key moved the focus since the home screen came up (else rows coming take it)
+    // The banner (TMDB's picks, one at a time; Left and Right step through them) and the rows of films and shows.
+    private List<Recs.Pick> bannerPicks = new ArrayList<>(), moviesRow = new ArrayList<>(), showsRow = new ArrayList<>();
+    private int bannerIndex;
+    private final Spring[][] posterFocus = {springs(ROW_MAX), springs(ROW_MAX)};
+    private final Spring[] posterScroll = {new Spring(0.3f, 0.9f, 0), new Spring(0.3f, 0.9f, 0)};
+    private final int[] posterIndex = new int[2];
+    private int posterRow;   // Z_POSTERS: 0 the films, 1 the shows
+    private LinearGradient bannerFade, bannerScrim;
+    private float bannerFadeW;
+    private Paint bannerTitle, bannerMeta, bannerButton;
 
     private final Activity activity;
     private final Scene scene = new Scene();
@@ -188,6 +212,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private Bitmap profileImage;
     private BitmapShader profileShader;
     private String profileAvatar = "", profileName = "";
+    private Paint pTitle, pMeta;
     /** How open (wide) each card is: 1 for the one at cardIndex, 0 for the others; the widths always add up to the same. */
     private final Spring[] cardOpen = new Spring[Recs.MAX_CARDS];
     /** Picks per tab (Prefs.cards()), read when the cards update, not on every frame. */
@@ -648,7 +673,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // frame cost more than drawing straight to the screen (measured: focus on the picks 33 → 12 ms a frame, the
         // drawer 19 → 17 ms).
         for (View v : new View[] {heroLayer, status, platter, tiles, drawerLayer, sheetLayer}) v.setLayerType(Ui.LEGACY ? LAYER_TYPE_NONE : LAYER_TYPE_HARDWARE, null);
-        for (View v : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuLayer, toastLayer, recentLayer}) {
+        // The page (sidebar=true): the banner on the platter's layer lies under the rows that rise into its fade.
+        View[] order = Config.SIDEBAR
+                ? new View[] {sky, platter, heroLayer, status, tiles, drawerLayer, sheetLayer, menuLayer, toastLayer, recentLayer}
+                : new View[] {sky, heroLayer, status, platter, tiles, drawerLayer, sheetLayer, menuLayer, toastLayer, recentLayer};
+        for (View v : order) {
             v.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);   // TalkBack reads the items (Spoken)
             addView(v);
         }
@@ -722,6 +751,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         updatePalette();
         updatePicks();
         updateProfile();
+        updateRows();
         updateSleep();      // a timer just set in Settings shows at once, not at the next tick
         if (allAppsOnResume) {
             allAppsOnResume = false;
@@ -785,6 +815,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         zone = Z_SHELF;
         shelfIndex = 0;
         cardIndex = 0;
+        if (page()) {   // as on Apple TV: the first row, at the start, the page at the top
+            pageMoved = false;
+            layoutPage();
+            int r = firstRow(1);
+            if (r == R_BANNER) zone = Z_BANNER;
+            if (r == R_WATCH) zone = Z_WATCH;
+            if (r == R_MOVIES || r == R_SHOWS) {
+                zone = Z_POSTERS;
+                posterRow = r - R_MOVIES;
+            }
+            watchIndex = 0;
+            posterIndex[0] = posterIndex[1] = 0;
+        }
         sheetOpen = false;
         drawerOpen = false;
         if (animated) {
@@ -852,15 +895,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int width = MeasureSpec.getSize(widthSpec), height = MeasureSpec.getSize(heightSpec);
         float kk = width / 1920f;
         measure(sky, width, height);
-        measure(heroLayer, width, Math.round(790 * kk));
+        if (page()) layoutPage();
+        // The page: its layers are as tall as it is and slide up as it scrolls.
+        int pageHeight = Math.round(pageH * kk);
+        measure(heroLayer, width, page() ? pageHeight : Math.round(790 * kk));
         // The icons at the top left need the whole width; with them off the layer keeps its old size (the corner buttons
         // only), so the GPU still composites a small layer.
         statusWide = Prefs.statusIcons();
         measure(status, statusWide ? width : Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
-        measure(platter, width, Math.round(320 * kk));
-        measure(tiles, width, Math.round(270 * kk));
+        measure(platter, width, page() ? Math.round(P_BANNER_H * kk) : Math.round(320 * kk));
+        measure(tiles, width, page() ? pageHeight : Math.round(270 * kk));
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
         measure(menuLayer, width, height);
@@ -879,8 +925,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sky.layout(0, 0, width, height);
         place(heroLayer, 0, 0);
         place(status, statusWide ? 0 : width - status.getMeasuredWidth(), 0);
-        place(platter, 0, Math.round(750 * kk));
-        place(tiles, 0, Math.round(790 * kk));
+        place(platter, 0, page() ? 0 : Math.round(750 * kk));
+        place(tiles, 0, page() ? 0 : Math.round(790 * kk));
         place(drawerLayer, 0, Math.round(470 * kk));
         sheetLayer.layout(0, 0, width, height);
         menuLayer.layout(0, 0, width, height);
@@ -945,6 +991,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lClock.setLetterSpacing(-0.01f);
         lWeather = Ui.text(Ui.medium, 34 * k, L_DIM);
         lClockQuote = Ui.numbers(Ui.medium, 28 * k, L_DIM);
+        pTitle = Ui.text(Ui.semibold, 28 * k, 0xFFFFFFFF);
+        pMeta = Ui.text(Ui.medium, 22 * k, 0xD9FFFFFF);
+        bannerTitle = Ui.text(Ui.displaySemibold, 72 * k, 0xFFFFFFFF);
+        bannerMeta = Ui.text(Ui.medium, 28 * k, 0xD9FFFFFF);
+        bannerButton = Ui.text(Ui.semibold, 28 * k, 0xFF1D1D1F);
         lightGradient = tintShade = null;
         buttonPaint = Ui.text(Ui.semibold, 29 * k, INK);
         capsuleText = Ui.numbers(Ui.medium, 29 * k, 0xF2FFFFFF);
@@ -1015,7 +1066,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean statusMoving = step(statusFocus, dt);
         boolean heroMoving = heroFocus.step(dt);
         boolean topMoving = step(topFocus, dt) | step(profileFocus, dt) | topReorderFrame, cardsMoving = step(cardFocus, dt) | step(cardOpen, dt) | cardScroll.step(dt)
-                | step(watchFocus, dt) | watchScroll.step(dt);
+                | step(watchFocus, dt) | watchScroll.step(dt) | step(posterFocus[0], dt) | step(posterFocus[1], dt) | posterScroll[0].step(dt) | posterScroll[1].step(dt);
+        if (page() && pageScroll.step(dt)) motionDirty = true;   // moves the layers only
         boolean tintMoving = tintMix.step(dt);
         if (tintMoving) {
             sky.invalidate();
@@ -1112,6 +1164,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Drawer and sheet: the layers' positions and opacity (without redrawing their content). */
     private void updateMotion() {
+        if (page()) {   // the page: no drawer or top fade, the layers follow the scroll
+            float y = -pageScroll.value * k;
+            heroLayer.setTranslationY(y);
+            tiles.setTranslationY(y);
+            platter.setTranslationY(y);   // the banner
+            if (Math.abs(pageScroll.value - pageScroll.target) > 0.5f || Math.abs(pageScroll.velocity) > 1) wake();
+            return;
+        }
         float d = drawer.value, dc = Ui.clamp(d), s = Ui.clamp(sheet.value);
         float home = 1 - s, top = home * (1 - smoothstep(0, 0.32f, dc));
         float shift = SHIFT * k;
@@ -1198,6 +1258,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void updatePicks() {
         if (labelPaint == null) return;
         updateCards();
+        updateRows();
     }
 
     private static boolean samePicks(List<Recs.Pick> a, List<Recs.Pick> b) {
@@ -1350,7 +1411,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Day or night right now (from the sun at your location); `animate`: with the transition. */
     private void checkNight(boolean animate) {
-        boolean want = data.isNight(System.currentTimeMillis());
+        boolean want = page() || data.isNight(System.currentTimeMillis());   // the page is always on the dark ground
         if (want == nightTarget) return;
         nightTarget = want;
         if (animate && running) {
@@ -1642,12 +1703,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             shelfIndex = Math.min(shelfIndex, Math.max(0, list.size() - 1));
             retarget(true);
             layoutShelf();
+            pageChanged();
         }
         tilesDirty = true;
         platter.invalidate();
     }
 
     private void layoutShelf() {
+        if (page()) {
+            layoutPageApps();
+            return;
+        }
         int n = Math.min(shelf.size(), shelfVisible);
         float pad = SHELF_PAD * k, gap = TILE_GAP * k;
         float full = (CONTENT_R - MARGIN) * k;
@@ -1663,6 +1729,25 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float x = left - shelfFirst * (tw + gap), y = top + pad;
         for (int i = 0; i < shelf.size(); i++) {
             tileRects[i].set(x, y, x + tw, y + th);
+            snap(tileRects[i]);
+            x += tw + gap;
+        }
+        crispLogos.clear();
+    }
+
+    /** The page's apps: one row at the bottom, left-aligned like the others, scrolling sideways past five. */
+    private void layoutPageApps() {
+        layoutPage();
+        int n = Math.min(shelf.size(), shelfVisible);
+        // As wide as fits between the margins, never above P_APP_H tall (16:9, the apps' own banners).
+        float gap = TILE_GAP * k, room = w - 2 * P_LEFT * k;
+        float tw = Math.min(P_APP_H * k * 16f / 9, (room - (n - 1) * gap) / Math.max(1, n)), th = tw * 9f / 16;
+        float top = (rowTop[R_APPS] + P_TITLE) * k;
+        shelfFirst = Math.max(0, Math.min(shelfFirst, shelf.size() - n));
+        platterRect.set(0, top, w, top + th);
+        float x = P_LEFT * k - shelfFirst * (tw + gap);
+        for (int i = 0; i < shelf.size(); i++) {
+            tileRects[i].set(x, top, x + tw, top + th);
             snap(tileRects[i]);
             x += tw + gap;
         }
@@ -1688,6 +1773,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Shelf layer: the glass bar and its shadow (it only changes with the background). */
     private void drawPlatter(Canvas c) {
+        if (page()) {   // the page's tiles stand on their own; this layer holds the banner
+            drawBanner(c);
+            return;
+        }
         if (shelf.isEmpty()) return;
         float radius = (TILE_RADIUS + SHELF_PAD) * k;
         tmp.set(platterRect);
@@ -1914,7 +2003,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         HomeApps.Item it = shelf.get(i);
         // Lifted to be moved: a little bigger than focused, with a deeper shadow.
         float l = !reorderTop && i == liftIndex ? Math.max(0, moveLift.value) : 0;
-        float f = tileFocus[i].value, fc = Ui.clamp(f), s = 1 + FOCUS_GROW * f + LIFT_GROW * l;
+        float f = tileFocus[i].value, fc = Ui.clamp(f), s = 1 + (page() ? P_APP_GROW : FOCUS_GROW) * f + LIFT_GROW * l;
         RectF base = tileRects[i];
         float bw = base.width(), bh = base.height(), r0 = TILE_RADIUS * k;
         float cx = base.centerX(), cy = base.centerY();
@@ -2451,6 +2540,22 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             handler.postDelayed(bgFollow, BG_FOLLOW_MS);
         }
         heroChanged |= aim(watchFocus, !sheetOpen && zone == Z_WATCH ? watchIndex : -1, snap);
+        if (page()) {
+            for (int row = 0; row < 2; row++) {
+                boolean here = !sheetOpen && zone == Z_POSTERS && posterRow == row;
+                heroChanged |= aim(posterFocus[row], here ? posterIndex[row] : -1, snap);
+                float to = Math.max(0, Math.min(posterIndex[row] - 5, posterList(row).size() - 6));
+                if (posterScroll[row].target != to) {
+                    heroChanged = true;
+                    posterScroll[row].target = to;
+                }
+            }
+            platter.invalidate();   // the banner's button follows the focus
+            heroChanged = true;     // and the rows' names, which row is bright
+            pageScroll.target = pageTarget();
+            if (snap) pageScroll.snap(pageScroll.target);
+            motionDirty = true;
+        }
         updateTint();
         // The row scrolls so the focused card is at most the third one on screen.
         float watchTo = Math.max(0, Math.min(watchIndex - 2, watching.size() - 3));
@@ -3188,6 +3293,21 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             moveGrid(dx, dy);
             return;
         }
+        if (page()) {
+            pageMoved = true;
+            if (dy != 0) {
+                movePageRow(dy);
+                return;
+            }
+            if (zone == Z_POSTERS || zone == Z_BANNER) {
+                movePageSideways(dx);
+                return;
+            }
+            if (zone == Z_WATCH) {
+                moveLight(dx, 0);
+                return;
+            }
+        }
         if (moveLight(dx, dy)) return;
         switch (zone) {
             case Z_SHELF:
@@ -3367,6 +3487,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (drawerItems.isEmpty()) return;
             it = drawerItems.get(drawerIndex);
             r = drawerRects[drawerIndex];
+        } else if (zone == Z_POSTERS || zone == Z_BANNER) {
+            openPagePick();
+            return;
         } else if (zone == Z_PROFILE) {
             openSidebar();   // its first row is who is watching: a second OK switches
             return;
@@ -4212,6 +4335,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         retarget(modeChanged);
         heroDirty = true;
+        pageChanged();
     }
 
     private static boolean sameWatching(List<WatchNext.Item> a, List<WatchNext.Item> b) {
@@ -4229,7 +4353,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** Card i's place on screen (without its focus growth), scrolled with the row. */
     private void watchRect(int i, RectF out) {
         float step = (WatchArt.W + WATCH_GAP) * k;
-        float x = MARGIN * k + i * step - watchScroll.value * step, y = L_CARDS_TOP * k;
+        float x = MARGIN * k + i * step - watchScroll.value * step, y = (page() ? rowTop[R_WATCH] + P_TITLE : L_CARDS_TOP) * k;
         out.set(x, y, x + WatchArt.W * k, y + WatchArt.H * k);
     }
 
@@ -4238,8 +4362,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int n = watching.size();
         watchTitles = new String[n];
         watchMetas = new String[n];
-        TextPaint tp = new TextPaint(lCardTitle), mp = new TextPaint(lCardMeta);
-        float width = WatchArt.W * k;
+        TextPaint tp = new TextPaint(page() ? pTitle : lCardTitle), mp = new TextPaint(page() ? pMeta : lCardMeta);
+        float width = (WatchArt.W - (page() ? 48 : 0)) * k;
         for (int i = 0; i < n; i++) {
             WatchNext.Item it = watching.get(i);
             watchTitles[i] = TextUtils.ellipsize(it.title, tp, width, TextUtils.TruncateAt.END).toString();
@@ -4306,6 +4430,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /** Like a pick's card (same focus, shadow, sheen and rim), with the progress bar on the picture. */
+    private LinearGradient watchScrim;
+    private float watchScrimH;
+
     private void drawWatchCard(Canvas c, int i) {
         watchRect(i, cell);
         if (cell.left > w || cell.right <= watchLeftEdge()) return;   // scrolled off screen
@@ -4329,6 +4456,22 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             fill.setShader(null);
             fill.setColor(tone(0xFFDADADF, 0xFF2C2C2E));
             c.drawRoundRect(cell, r, r, fill);
+        }
+        if (page()) {   // the title on the picture, over a dark fade at its foot (made once per card size)
+            if (watchScrim == null || watchScrimH != bh) {
+                watchScrim = new LinearGradient(0, 0, 0, bh * 0.55f, 0x00000000, 0xC0000000, Shader.TileMode.CLAMP);
+                watchScrimH = bh;
+            }
+            c.save();
+            c.translate(cell.left, cell.bottom - bh * 0.55f * s);
+            c.scale(s, s);
+            tmp.set(0, 0, bw, bh * 0.55f);
+            c.clipRect(tmp);
+            tmp.top -= r0;
+            fill.setShader(watchScrim);
+            c.drawRoundRect(tmp, r0, r0, fill);
+            fill.setShader(null);
+            c.restore();
         }
         float progress = it.progress();
         if (progress >= 0) {
@@ -4364,6 +4507,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             rim.setStrokeWidth(2.5f * k);
             rim.setAlpha(255);
             c.restore();
+        }
+        if (page()) {
+            float tx = cell.left + 24 * k * s, base = cell.bottom - 40 * k * s;
+            c.save();
+            c.scale(s, s, tx, base);
+            if (!watchMetas[i].isEmpty()) c.drawText(watchMetas[i], tx, base, pMeta);
+            c.drawText(watchTitles[i], tx, base - (watchMetas[i].isEmpty() ? 0 : 32 * k), pTitle);
+            c.restore();
+            return;
         }
         c.drawText(watchTitles[i], textLeft, textTop + 46 * k, lCardTitle);
         if (!watchMetas[i].isEmpty()) c.drawText(watchMetas[i], textLeft, textTop + 80 * k, lCardMeta);
@@ -4635,7 +4787,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (nightGradient == null) nightGradient = Ui.gradient(h, 0xFF1C1C1E, 0xFF0B0B0D);
             fill.setColorFilter(v);
             fill.setColor(0xFF000000);
-            if (continueMode()) {
+            if (page()) {
+                fill.setShader(null);
+                fill.setColor(P_GROUND);
+                c.drawRect(screen, fill);
+            } else if (continueMode()) {
                 drawTint(c);
             } else if (night < 0.999f) {
                 fill.setShader(lightGradient);
@@ -4719,10 +4875,278 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (night > 0.001f) drawImage(c, b.nightImage, alpha * night);
     }
 
-    /** The corner avatar shows with the title or the tabs, not on the clock. */
+    /** The corner avatar shows with the title or the tabs, not on the clock; the page has it in the sidebar. */
     private boolean profileShown() {
-        return !clockMode();
+        return !clockMode() && !page();
     }
+
+    private static Spring[] springs(int n) {
+        Spring[] out = new Spring[n];
+        for (int i = 0; i < n; i++) out[i] = new Spring(0.26f, 0.85f, 0);
+        return out;
+    }
+
+    /** The scrolling page in place of the home screen's fixed one (the sidebar build). */
+    private boolean page() {
+        return Config.SIDEBAR;
+    }
+
+    /** Where each row sits on the page, top to bottom; rows with nothing to show take no room. */
+    private void layoutPage() {
+        rowOn[R_BANNER] = !bannerPicks.isEmpty();
+        rowOn[R_WATCH] = !watching.isEmpty();
+        rowOn[R_MOVIES] = !moviesRow.isEmpty();
+        rowOn[R_SHOWS] = !showsRow.isEmpty();
+        rowOn[R_APPS] = !shelf.isEmpty();
+        rowTop[R_BANNER] = 0;
+        float y = rowOn[R_BANNER] ? P_UNDER_BANNER : P_FIRST;   // under the banner, the first row rises into its fade
+        for (int r = R_WATCH; r < ROWS; r++) {
+            rowTop[r] = y;
+            if (rowOn[r]) y += P_TITLE + rowItemsH(r) + P_GAP;
+        }
+        pageH = Math.max(1080, y + 40);
+    }
+
+    private float rowItemsH(int r) {
+        return r == R_BANNER ? P_UNDER_BANNER - P_TITLE - P_GAP : r == R_WATCH ? WatchArt.H
+                : r == R_APPS ? P_APP_H : P_POSTER_H;
+    }
+
+    private static String rowName(int r) {
+        return r == R_WATCH ? Ui.tr("Continue Watching") : r == R_MOVIES ? Ui.tr("Movies for you")
+                : r == R_SHOWS ? Ui.tr("Shows for you") : Ui.tr("Apps");
+    }
+
+    /** The row the focus is in, or -1. */
+    private int focusRow() {
+        return zone == Z_BANNER ? R_BANNER : zone == Z_WATCH ? R_WATCH : zone == Z_POSTERS ? R_MOVIES + posterRow
+                : zone == Z_SHELF ? R_APPS : -1;
+    }
+
+    /** The page's rows change (a list came, the shelf changed): measure again, keep the focus on a row that shows. */
+    private void pageChanged() {
+        if (!page()) return;
+        layoutPage();
+        if (!shelf.isEmpty() && tileRects.length == shelf.size()) {   // the apps' row moves with the rows above it
+            layoutPageApps();
+            tilesDirty = true;
+            tiles.invalidate();
+        }
+        int r = focusRow();
+        if (!pageMoved || r >= 0 && !rowOn[r]) enterRow(firstRow(1), false);   // untouched: the first row, as rows come
+        else retarget(false);   // the scroll follows the row's new place
+        requestLayout();
+        heroDirty = true;
+        heroLayer.invalidate();
+    }
+
+    private int firstRow(int dir) {
+        for (int i = 0; i < ROWS; i++) {
+            int r = dir > 0 ? i : ROWS - 1 - i;
+            if (rowOn[r]) return r;
+        }
+        return -1;
+    }
+
+    private void enterRow(int r, boolean click) {
+        if (r < 0) return;
+        zone = r == R_BANNER ? Z_BANNER : r == R_WATCH ? Z_WATCH : r == R_APPS ? Z_SHELF : Z_POSTERS;
+        if (zone == Z_POSTERS) posterRow = r - R_MOVIES;
+        if (zone == Z_WATCH) watchIndex = Math.min(watchIndex, watching.size() - 1);
+        if (zone == Z_SHELF) shelfIndex = Math.min(shelfIndex, Math.max(0, shelf.size() - 1));
+        retarget(false);
+        if (click) this.click.move();
+    }
+
+    /** Up and Down on the page: the next row that shows, keeping each row's own place. */
+    private boolean movePageRow(int dy) {
+        int r = focusRow();
+        for (int next = r + dy; next >= 0 && next < ROWS; next += dy) {
+            if (rowOn[next]) {
+                enterRow(next, true);
+                return true;
+            }
+        }
+        return true;   // the first or the last row: nothing above or below
+    }
+
+
+    /** The page scrolls only as far as it must to show the focused row whole, with the row's name. */
+    private float pageTarget() {
+        int r = focusRow();
+        if (r <= R_BANNER) return 0;
+        float bottom = rowTop[r] + P_TITLE + rowItemsH(r) + P_GAP;
+        if (bottom <= 1080) return 0;
+        return Math.max(0, Math.min(pageH - 1080, rowTop[r] - P_FIRST));
+    }
+
+
+    /** The films and shows for the rows and the banner, this hour's, on the services this TV has. */
+    private void updateRows() {
+        if (!page()) return;
+        List<Recs.Pick> banner = recs.now(null, 5), movies = recs.now("movie", ROW_MAX), shows = recs.now("tv", ROW_MAX);
+        if (samePicks(banner, bannerPicks) && samePicks(movies, moviesRow) && samePicks(shows, showsRow)) {
+            heroDirty = true;   // a poster or a backdrop may have come
+            heroLayer.invalidate();
+            platter.invalidate();
+            return;
+        }
+        bannerPicks = banner;
+        moviesRow = movies;
+        showsRow = shows;
+        bannerIndex = Math.min(bannerIndex, Math.max(0, banner.size() - 1));
+        posterIndex[0] = Math.min(posterIndex[0], Math.max(0, movies.size() - 1));
+        posterIndex[1] = Math.min(posterIndex[1], Math.max(0, shows.size() - 1));
+        platter.invalidate();
+        pageChanged();
+    }
+
+    private List<Recs.Pick> posterList(int row) {
+        return row == 0 ? moviesRow : showsRow;
+    }
+
+    /** Sideways in a row of films or shows, or through the banner's; Left at the first opens the sidebar. */
+    private void movePageSideways(int dx) {
+        boolean banner = zone == Z_BANNER;
+        int size = banner ? bannerPicks.size() : posterList(posterRow).size(), at = banner ? bannerIndex : posterIndex[posterRow];
+        int next = Math.max(0, Math.min(size - 1, at + dx));
+        if (next == at) {
+            if (dx < 0) openSidebar();
+            return;
+        }
+        if (banner) {
+            bannerIndex = next;
+            platter.invalidate();
+        } else {
+            posterIndex[posterRow] = next;
+        }
+        retarget(false);
+        click.move();
+    }
+
+    /** OK on the banner or a poster: the title in its app, as the picks' cards open it. */
+    private void openPagePick() {
+        List<Recs.Pick> list = zone == Z_BANNER ? bannerPicks : posterList(posterRow);
+        int i = zone == Z_BANNER ? bannerIndex : posterIndex[posterRow];
+        Recs.Pick p = i < list.size() ? list.get(i) : null;
+        if (p == null || p.pkg == null) return;
+        click.open();
+        HomeApps.open(activity, HomeApps.app(p.pkg, Recs.serviceName(p), p.link), this, w / 2, h / 2, 1, 1);
+    }
+
+    private void posterRect(int row, int i, RectF out) {
+        float step = P_POSTER_W + P_POSTER_GAP;
+        float x = (P_LEFT + i * step - posterScroll[row].value * step) * k, y = (rowTop[R_MOVIES + row] + P_TITLE) * k;
+        out.set(x, y, x + P_POSTER_W * k, y + P_POSTER_H * k);
+    }
+
+    private void drawPosters(Canvas c, int row) {
+        List<Recs.Pick> list = posterList(row);
+        Spring[] focus = posterFocus[row];
+        int top = -1, n = Math.min(list.size(), ROW_MAX);
+        for (int i = 0; i < n; i++) if (focus[i].value > 0.02f && (top < 0 || focus[i].value > focus[top].value)) top = i;
+        for (int i = 0; i < n; i++) if (i != top) drawPoster(c, row, i);
+        if (top >= 0) drawPoster(c, row, top);
+    }
+
+    /** A poster: rounded, with a soft shadow; focused, it grows a little, rises and gets a white edge (no blur). */
+    private void drawPoster(Canvas c, int row, int i) {
+        posterRect(row, i, tmp);
+        if (tmp.right < 0 || tmp.left > w) return;
+        Recs.Pick p = posterList(row).get(i);
+        float v = posterFocus[row][i].value, f = Ui.clamp(v), s = 1 + P_POSTER_GROW * v, r0 = 16 * k;
+        float cx = tmp.centerX(), cy = tmp.centerY(), bw = tmp.width(), bh = tmp.height();
+        c.save();
+        c.translate(cx, cy);
+        c.scale(s, s);
+        cell.set(-bw / 2, -bh / 2 + (10 + 14 * f) * k, bw / 2, bh / 2 + (10 + 14 * f) * k);
+        shadowDeep.setColor(Ui.alpha(0xFF000000, 0.35f + 0.25f * f));
+        shadows.draw(c, cell, r0, DEEP_BLUR * k, shadowDeep);
+        c.restore();
+        cell.set(cx - bw * s / 2, cy - bh * s / 2, cx + bw * s / 2, cy + bh * s / 2);
+        Recs.Poster poster = recs.rowPoster(p, Math.round(bw), Math.round(bh));
+        if (poster != null) {
+            roundImage(c, poster.bitmap, poster.shader, cell, r0 * s);
+        } else {   // still coming: its title on a quiet card
+            fill.setShader(null);
+            fill.setColor(0xFF2C2C2E);
+            c.drawRoundRect(cell, r0 * s, r0 * s, fill);
+            c.drawText(p.title, cell.left + 18 * k, cell.bottom - 24 * k, pMeta);
+        }
+        if (f > 0.01f) {
+            rim.setShader(null);
+            rim.setColor(Ui.alpha(0xFFFFFFFF, 0.9f * f));
+            rim.setStrokeWidth(3 * k);
+            c.drawRoundRect(cell, r0 * s, r0 * s, rim);
+        }
+    }
+
+    /**
+     * The banner, on its own layer (drawn when it changes, then only moved with the page): the title's backdrop over
+     * the whole width, fading into the page's ground at its foot and darker behind the text at the left; the title,
+     * its details and a button for its app. Left and Right step through this hour's five.
+     */
+    private void drawBanner(Canvas c) {
+        if (bannerPicks.isEmpty()) return;
+        Recs.Pick p = bannerPicks.get(Math.min(bannerIndex, bannerPicks.size() - 1));
+        float bh = P_BANNER_H * k;
+        Recs.Poster picture = recs.banner(p, w, Math.round(bh));   // at the banner's exact size: drawn 1:1
+        if (picture != null) {
+            c.drawBitmap(picture.bitmap, 0, 0, imagePaint);
+        } else {
+            fill.setShader(null);
+            fill.setColor(0xFF1C1C1E);
+            c.drawRect(0, 0, w, bh, fill);
+        }
+        if (bannerFade == null || bannerFadeW != w) {
+            bannerFade = new LinearGradient(0, bh - 420 * k, 0, bh, 0x00000000 | (P_GROUND & 0xFFFFFF), P_GROUND, Shader.TileMode.CLAMP);
+            bannerScrim = new LinearGradient(0, 0, w * 0.62f, 0, 0xB3000000, 0x00000000, Shader.TileMode.CLAMP);
+            bannerFadeW = w;
+        }
+        fill.setShader(bannerScrim);
+        c.drawRect(0, 0, w * 0.62f, bh, fill);
+        fill.setShader(bannerFade);
+        c.drawRect(0, bh - 420 * k, w, bh, fill);
+        fill.setShader(null);
+        float x = P_LEFT * k, base = 330 * k;
+        c.drawText(p.title, x - Ui.leftBearing(bannerTitle, p.title), base, bannerTitle);
+        String meta = p.meta == null ? "" : p.meta;
+        if (!meta.isEmpty()) c.drawText(meta, x, base + 52 * k, bannerMeta);
+        // The button: its app's name; white when the banner has the focus, glass otherwise.
+        boolean on = zone == Z_BANNER && !sheetOpen;
+        String label = Ui.trf("Open in {app}", "app", Recs.serviceName(p));
+        float tw = bannerButton.measureText(label), bx = x, by = base + 92 * k, bw = tw + 64 * k, bhh = 64 * k;
+        tmp.set(bx, by, bx + bw, by + bhh);
+        fill.setColor(on ? 0xFFFFFFFF : 0x33FFFFFF);
+        c.drawRoundRect(tmp, bhh / 2, bhh / 2, fill);
+        bannerButton.setColor(on ? 0xFF1D1D1F : 0xFFFFFFFF);
+        c.drawText(label, bx + 32 * k, by + bhh / 2 + Ui.halfCap(bannerButton), bannerButton);
+        // Which of the five: small dots, the current one wide.
+        float dy = by + bhh + 44 * k, dx = x;
+        for (int i = 0; i < bannerPicks.size(); i++) {
+            float dw = i == bannerIndex ? 28 * k : 10 * k;
+            tmp.set(dx, dy, dx + dw, dy + 10 * k);
+            fill.setColor(i == bannerIndex ? 0xE6FFFFFF : 0x66FFFFFF);
+            c.drawRoundRect(tmp, 5 * k, 5 * k, fill);
+            dx += dw + 10 * k;
+        }
+    }
+
+    /** The page's top layer: each row's name, Continue Watching and the posters (banner and apps have their own). */
+    private void drawPage(Canvas c) {
+        // Every row: the page scrolls by moving this layer, not by drawing it again.
+        for (int r = R_WATCH; r < ROWS; r++) {
+            if (!rowOn[r]) continue;
+            // The row with the focus says its name in full white, the others quieter: where you are, at a glance.
+            String name = rowName(r);
+            lTabOn.setColor(r == focusRow() && !sheetOpen ? 0xFFFFFFFF : 0x8CFFFFFF);
+            c.drawText(name, P_LEFT * k - Ui.leftBearing(lTabOn, name), (rowTop[r] + 38) * k, lTabOn);
+            if (r == R_WATCH) drawWatchRow(c);
+            if (r == R_MOVIES || r == R_SHOWS) drawPosters(c, r - R_MOVIES);
+        }
+    }
+
+
 
     /** How far the title and the tabs move right for the avatar. */
     private float profileShift() {
@@ -4784,6 +5208,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             titleRight = 0;
             drawClock(c);
             if (HomeData.coinCount() > 0 || playingTab != null) drawQuotes(c);
+            return;
+        }
+        if (page()) {
+            drawPage(c);
             return;
         }
         drawProfile(c);

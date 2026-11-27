@@ -362,6 +362,11 @@ final class Recs {
 
     /** This hour's Prefs.cards(), movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
+        return now(kind, Prefs.cards());
+    }
+
+    /** This hour's picks of `kind` (null = both), up to `cards` (the sidebar build's rows show more than the tabs). */
+    List<Pick> now(String kind, int cards) {
         List<Pick> out = new ArrayList<>();
         if (!hasKey(context)) return out;    // no TMDB key: no recommendations
         List<Pick> progress = new ArrayList<>(), liked = new ArrayList<>(), list = new ArrayList<>();
@@ -377,7 +382,6 @@ final class Recs {
         // Trakt first: what they're in the middle of (as Trakt orders it), up to 2 in 5 cards, then their watchlist and
         // Trakt's recommendations, up to 3 in 5 with those; then TMDB's. A new set each hour; Trakt's fill the rest when
         // TMDB's run short. Never two from the same franchise ("Law & Order" and "Law & Order: Special…").
-        int cards = Prefs.cards();
         java.util.Set<String> seen = new java.util.HashSet<>();
         take(out, seen, progress, 0, Math.max(1, cards * 2 / 5));
         take(out, seen, liked, hour * cards, Math.max(2, cards * 3 / 5));
@@ -1425,6 +1429,101 @@ final class Recs {
         Bitmap card = Backdrop.card(full, Backdrop.TALL_W, Backdrop.TALL_H, 0);
         if (card != full && !full.isRecycled()) full.recycle();   // the decoded 500 × 750 poster is 1.5 MB
         return new Poster(card);
+    }
+
+    /** The rows' posters (the sidebar build): small and many, so apart from the backdrops, at the size they are drawn. */
+    private final Map<String, Poster> rowPosters = new java.util.LinkedHashMap<String, Poster>(32, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Poster> eldest) {
+            return size() > ROW_POSTERS;
+        }
+    };
+    private final java.util.Set<String> rowPending = new java.util.HashSet<>();
+    private static final int ROW_POSTERS = 30;
+
+    /**
+     * The title's poster at w × h for a row, or null while it is fetched (listeners hear when it's ready). TMDB's w342
+     * copy: about 40 KB to download, 0.35 MB once decoded at 240 × 360.
+     */
+    Poster rowPoster(Pick p, int w, int h) {
+        if (p == null || p.poster == null || p.poster.isEmpty() || p.id < 0) return null;
+        String key = p.poster;
+        synchronized (rowPosters) {
+            Poster have = rowPosters.get(key);
+            if (have != null || !rowPending.add(key)) return have;
+        }
+        io.execute(() -> {
+            Poster made = null;
+            try {
+                File f = new File(new File(context.getCacheDir(), "recs"), "r" + key.replace("/", ""));
+                if (!f.exists()) fetchFile(f, (HttpURLConnection) new URL("https://image.tmdb.org/t/p/w342" + key).openConnection());
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inPreferredConfig = Bitmap.Config.RGB_565;   // a poster has no transparency: half the memory
+                Bitmap full = BitmapFactory.decodeFile(f.getPath(), o);
+                if (full != null) {
+                    Bitmap sized = Backdrop.card(full, w, h, 0);
+                    if (sized != full) full.recycle();
+                    made = new Poster(sized);
+                }
+            } catch (IOException | RuntimeException | OutOfMemoryError e) {
+                AppLog.w("row poster: " + e.getMessage());
+            }
+            synchronized (rowPosters) {
+                rowPending.remove(key);
+                if (made != null) rowPosters.put(key, made);
+            }
+            if (made != null) notifyListeners();
+        });
+        return null;
+    }
+
+    /** The banner's pictures (the sidebar build): from the full backdrop on disk, at the banner's own size; two kept. */
+    private final Map<String, Poster> banners = new java.util.LinkedHashMap<String, Poster>(4, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Poster> eldest) {
+            return size() > 2;
+        }
+    };
+    private final java.util.Set<String> bannerPending = new java.util.HashSet<>();
+
+    /** The title's backdrop at w × h (its top kept), or null while it is downloaded or decoded (listeners hear). */
+    Poster banner(Pick p, int w, int h) {
+        if (p == null || p.backdrop == null || p.id < 0) return null;
+        String key = p.backdrop + "@" + w;
+        synchronized (banners) {
+            Poster have = banners.get(key);
+            if (have != null || bannerPending.contains(key)) return have;
+            if (!hasImage(p)) {
+                backdrop(p);   // downloads it; its listeners' call brings us back
+                return null;
+            }
+            bannerPending.add(key);
+        }
+        io.execute(() -> {
+            Poster made = null;
+            try {
+                File f = imageFile(p);
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                BitmapFactory.decodeFile(f.getPath(), bounds);
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inPreferredConfig = Bitmap.Config.RGB_565;
+                o.inSampleSize = 1;
+                while (bounds.outWidth / (o.inSampleSize * 2) >= w) o.inSampleSize *= 2;
+                Bitmap full = BitmapFactory.decodeFile(f.getPath(), o);
+                if (full != null) {
+                    Bitmap sized = Backdrop.card(full, w, h, 0);
+                    if (sized != full) full.recycle();
+                    made = new Poster(sized);
+                }
+            } catch (RuntimeException | OutOfMemoryError e) {
+                AppLog.w("banner: " + e.getMessage());
+            }
+            synchronized (banners) {
+                bannerPending.remove(key);
+                if (made != null) banners.put(key, made);
+            }
+            if (made != null) notifyListeners();
+        });
+        return null;
     }
 
     Poster poster(Pick p) {
