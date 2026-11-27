@@ -113,6 +113,8 @@ final class HomeMode {
      */
     static final String[] DEBLOAT = {
         "com.google.android.play.games", "com.google.android.youtube.tvmusic",        // Play Games, YouTube Music
+        "com.google.android.music", "com.google.android.videos",                      // Play Music (shut down), Play Movies
+        "com.google.android.feedback", "com.google.android.tv.bugreportsender",       // feedback and bug-report senders
         // TCL
         "com.tcl.magiconnectfree", "com.tcl.miracast",                                // screen mirroring apps
         "com.tcl.messagebox", "com.tcl.usercenter",                                   // TCL messages and account
@@ -127,6 +129,7 @@ final class HomeMode {
         // Xiaomi
         "com.miui.tv.analytics", "com.xiaomi.statistic",                              // telemetry
         "com.mitv.tvhome.mitvplus", "com.xm.webcontent",                              // Mi TV+ promo channels, promo web content
+        "com.xiaomi.mimusic2", "com.mitv.gallery",                                    // Mi Music, Mi Gallery (~80 MB in the background)
         // Skyworth (VEON and other badges; MediaTek)
         "com.smartdevice.epopplayer", "com.coocaa.demonow.lightining",               // store demos (start on screen on)
         "com.smartdevice.recommendation",                                             // Coolita promo channels
@@ -998,7 +1001,7 @@ final class HomeMode {
                         }
                     }
                 }
-                if (!back.isEmpty()) notice(app, Ui.trf("Turned back on {list}: the TV's inputs or remote need it.", "list", String.join(", ", back)));
+                if (!back.isEmpty()) notice(app, Ui.trf("Turned back on {list}: the TV's inputs or remote need it.", "list", names(app, back)));
                 // JmLauncher: the HTC home screen goes off only while the Home button opens ours.
                 boolean jmOurs = true;
                 if (hasJm(adb)) {
@@ -1062,8 +1065,8 @@ final class HomeMode {
                 return;
             }
             if (!fixed.isEmpty()) {
-                notice(app, updated ? Ui.trf("The TV update turned back on {list}.", "list", String.join(", ", fixed))
-                        : Ui.trf("Turned off what was missing: {list}.", "list", String.join(", ", fixed)));
+                notice(app, updated ? Ui.trf("The TV update turned back on {list}.", "list", names(app, fixed))
+                        : Ui.trf("Turned off what was missing: {list}.", "list", names(app, fixed)));
             } else if (updated) {
                 notice(app, Ui.tr("The TV was updated; Free My TV is still on."));
             }
@@ -1484,6 +1487,20 @@ final class HomeMode {
     }
 
     /** A notice for the home screen (a bubble) and the settings screen. Keeps the last 20. */
+    /** The apps' names as the TV shows them (turned off or not), for notices; a package's own name when it has none. */
+    private static String names(Context c, List<String> pkgs) {
+        PackageManager pm = c.getPackageManager();
+        List<String> out = new ArrayList<>();
+        for (String pkg : pkgs) {
+            try {
+                out.add(String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, PackageManager.MATCH_DISABLED_COMPONENTS))));
+            } catch (PackageManager.NameNotFoundException e) {
+                out.add(pkg);
+            }
+        }
+        return String.join(", ", out);
+    }
+
     static void notice(Context c, String text) {
         AppLog.w("notice: " + text);
         JSONObject s = state(c);
