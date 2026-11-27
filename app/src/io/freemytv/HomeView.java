@@ -2894,6 +2894,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             final boolean allowed = WatchNext.allowed(c);
             // The page (sidebar build) has its own Continue Watching row, whatever the top of the screen shows.
             final List<WatchNext.Item> w = mode.equals(Prefs.TOP_CONTINUE) || page() ? WatchNext.load(c) : new ArrayList<>();
+            if (page()) mergeLog(w, WatchLog.items(c));
             handler.post(() -> {
                 // A provider/package refresh must not cancel a drag or undo a move that was just saved.
                 boolean keepOrder = reordering || pendingOrderSaves > 0 || orderAtLoad != orderRevision;
@@ -4331,6 +4332,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return topMode.equals(Prefs.TOP_CONTINUE);
     }
 
+    /**
+     * The page's Continue Watching: the TV's Watch Next list and our own log (what was opened from here, Netflix's and
+     * Prime Video's above all, which tell Android nothing), newest first, each title once (Watch Next's wins: it knows
+     * how far along it is).
+     */
+    private static void mergeLog(List<WatchNext.Item> into, List<WatchNext.Item> log) {
+        java.util.Set<String> have = new java.util.HashSet<>();
+        for (WatchNext.Item it : into) have.add(it.title == null ? "" : it.title.toLowerCase(java.util.Locale.ROOT));
+        for (WatchNext.Item it : log) if (have.add(it.title.toLowerCase(java.util.Locale.ROOT))) into.add(it);
+        java.util.Collections.sort(into, (a, b) -> Long.compare(b.engaged, a.engaged));
+    }
+
     /** What the top shows now (from reload, off the main thread) and, for Continue Watching, its list. */
     private void setTopContent(String mode, List<WatchNext.Item> list, boolean allowed) {
         if (!hiddenNow.isEmpty()) {
@@ -5124,7 +5137,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (p == null) return;
         click.open();
         // The banner's button: straight to the app (or to the store, to get it); with no service known, its page.
-        if (zone == Z_BANNER && HomeApps.watch(activity, p.pkg, Recs.serviceName(p), p.link)) return;
+        if (zone == Z_BANNER && HomeApps.watch(activity, p.pkg, Recs.serviceName(p), p.link)) {
+            WatchLog.started(activity, p);
+            return;
+        }
         // A poster: its page first (what it is, its score, the trailer), as the Apple TV app does.
         activity.startActivity(new Intent(activity, TitleActivity.class)
                 .putExtra(TitleActivity.EXTRA_KIND, p.kind).putExtra(TitleActivity.EXTRA_ID, p.id));

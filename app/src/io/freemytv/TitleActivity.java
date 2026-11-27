@@ -143,7 +143,10 @@ public class TitleActivity extends Activity implements Recs.Listener {
             if (i > 0 && HomeApps.launchIntent(getPackageManager(), s[1]) != null) label = s[0];   // "Prime Video"
             TextView b = button(label, i == 0 ? 30 : 26, i == 0 ? Ui.semibold : Ui.medium);
             b.setOnClickListener(v -> {
-                if (HomeApps.watch(this, s[1], s[0], s[1].equals(pick.pkg) ? pick.link : null)) finish();
+                if (HomeApps.watch(this, s[1], s[0], s[1].equals(pick.pkg) ? pick.link : null)) {
+                    if (s[1].equals(pick.pkg)) WatchLog.started(this, pick);   // Continue Watching knows it from here
+                    finish();
+                }
             });
         }
         if (trailerKey != null) {
