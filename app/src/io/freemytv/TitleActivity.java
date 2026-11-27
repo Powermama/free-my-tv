@@ -29,6 +29,8 @@ import java.util.List;
  */
 public class TitleActivity extends Activity implements Recs.Listener {
     static final String EXTRA_KIND = "io.freemytv.KIND", EXTRA_ID = "io.freemytv.ID";
+    /** Opened again by Back from its trailer in YouTube (TrailerReturn): in a task of its own, so Back goes home. */
+    static final String EXTRA_AGAIN = "io.freemytv.AGAIN";
     private static final int SKELETON = 0x33F5F5F7;
 
     private float k;
@@ -141,11 +143,7 @@ public class TitleActivity extends Activity implements Recs.Listener {
         }
         if (trailerKey != null) {
             TextView t = button("▶  " + Ui.tr("Trailer"), 26, Ui.medium);
-            t.setOnClickListener(v -> {
-                startActivity(new Intent(this, TrailerActivity.class).putExtra(TrailerActivity.EXTRA_VIDEO, trailerKey)
-                        .putExtra(TrailerActivity.EXTRA_TITLE, pick.title));
-                overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
-            });
+            t.setOnClickListener(v -> openTrailer());
         }
         View again = buttons.getChildAt(Math.min(focusedAt, buttons.getChildCount() - 1));
         if (again != null) again.requestFocus();
@@ -277,8 +275,28 @@ public class TitleActivity extends Activity implements Recs.Listener {
         return null;
     }
 
+    /**
+     * In the YouTube app, where it starts fastest ("https://www.youtube.com/watch?v=": "vnd.youtube:" only opened its
+     * home on this TV); Back there comes back here (TrailerReturn).
+     */
+    private void openTrailer() {
+        if (trailerKey == null) return;
+        TrailerReturn.leave(this, pick.kind, pick.id);
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.youtube.com/watch?v=" + trailerKey))
+                    .setPackage(TrailerReturn.YOUTUBE));
+        } catch (android.content.ActivityNotFoundException | SecurityException e) {
+            TrailerReturn.drop(this);
+            AppLog.w("trailer: " + e.getMessage());
+        }
+    }
+
     @Override public void finish() {
         super.finish();
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out);
+        // Opened again from its trailer, it's alone in its task: under it is YouTube. Home instead.
+        if (getIntent().getBooleanExtra(EXTRA_AGAIN, false)) {
+            startActivity(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        }
     }
 }
