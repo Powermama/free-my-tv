@@ -2892,7 +2892,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             // Only read when it's shown: with the picks or the clock, Continue Watching costs nothing.
             final String mode = Prefs.topContent();
             final boolean allowed = WatchNext.allowed(c);
-            final List<WatchNext.Item> w = mode.equals(Prefs.TOP_CONTINUE) ? WatchNext.load(c) : new ArrayList<>();
+            // The page (sidebar build) has its own Continue Watching row, whatever the top of the screen shows.
+            final List<WatchNext.Item> w = mode.equals(Prefs.TOP_CONTINUE) || page() ? WatchNext.load(c) : new ArrayList<>();
             handler.post(() -> {
                 // A provider/package refresh must not cancel a drag or undo a move that was just saved.
                 boolean keepOrder = reordering || pendingOrderSaves > 0 || orderAtLoad != orderRevision;
@@ -4349,6 +4350,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
         topMode = mode;
         if (modeChanged) closeMenu(false);
+        if (list.size() != watching.size()) AppLog.w("continue watching: " + list.size() + " from the TV's Watch Next");
         watching = list;
         watchTitles = null;
         watchIndex = Math.min(watchIndex, Math.max(0, list.size() - 1));
@@ -5215,7 +5217,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         bannerTitle.setAlpha(ta);
         bannerMeta.setAlpha(Math.round(0xD9 * t));
         c.drawText(p.title, x - Ui.leftBearing(bannerTitle, p.title), base + 16 * k * (1 - t), bannerTitle);
-        String meta = p.meta == null ? "" : p.meta;
+        // What it is; where it streams is the button's ("Open in Prime Video"), not said twice.
+        String meta = p.meta == null ? "" : p.meta, service = Recs.serviceName(p);
+        if (!service.isEmpty() && meta.endsWith(" · " + service)) meta = meta.substring(0, meta.length() - service.length() - 3);
         if (!meta.isEmpty()) c.drawText(meta, x, base + 52 * k + 16 * k * (1 - t), bannerMeta);
         bannerTitle.setAlpha(255);
         bannerMeta.setAlpha(0xD9);
