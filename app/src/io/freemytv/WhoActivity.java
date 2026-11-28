@@ -30,6 +30,8 @@ import java.util.List;
 public class WhoActivity extends Activity {
     static final int INK = 0xFFF5F5F7, DIM = 0x99F5F5F7, PILL = 0x1FFFFFFF, DARK = 0xFF1C1C1E;
     private static final int AVATAR = 200, GAP = 56;
+    /** Opens in "Manage profiles" (the admin cards' Profiles). */
+    static final String EXTRA_MANAGE = "io.freemytv.MANAGE";
 
     private float k;
     private boolean manage;
@@ -57,6 +59,7 @@ public class WhoActivity extends Activity {
         action.setOnClickListener(v -> setManage(!manage));
         column.addView(action, wrap(0, 0, 0, 0));
         setContentView(column);
+        manage = getIntent().getBooleanExtra(EXTRA_MANAGE, false);
     }
 
     @Override protected void onResume() {

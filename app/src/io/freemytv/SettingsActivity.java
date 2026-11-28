@@ -50,6 +50,13 @@ import java.util.Set;
  * (HomeMode) and this screen only asks for it and follows the state file.
  */
 public class SettingsActivity extends Activity {
+    /**
+     * Opens straight at one of the main list's rows (the sidebar build's admin cards, QuickPanelActivity), and Back
+     * from that row's screen leaves the settings: the cards are the list there.
+     */
+    static final String EXTRA_ROW = "io.freemytv.ROW";
+    static final int ROW_HOME = 0, ROW_SAVER = 1, ROW_HOME_SETTINGS = 2, ROW_SHELF = 3, ROW_INPUTS = 5, ROW_REMOTE = 6,
+            ROW_SLEEP = 7;
     private SettingsView view;
     private DreamView preview;   // "Screensaver": the screensaver right here, without changing the system setting
 
@@ -63,6 +70,8 @@ public class SettingsActivity extends Activity {
         SleepTimer.check(this);
         view = new SettingsView(this);
         setContentView(view);
+        int row = getIntent().getIntExtra(EXTRA_ROW, -1);
+        if (row >= 0) view.post(() -> view.openRow(row));
     }
 
     /**
@@ -971,6 +980,7 @@ public class SettingsActivity extends Activity {
                             }
                         }
                         backDown = false;
+                        if (screen == MAIN && fromCard) activity.finish();   // opened at a row: back to the cards
                     }
                     invalidate();
                     spoken.focusMoved();
@@ -2476,6 +2486,17 @@ public class SettingsActivity extends Activity {
                 if (!RemoteKeys.FILTER_SAFE) c.drawText(Ui.tr("On this TV they work on Free My TV's home screen only."),
                         LIST_X * k + 30 * k, hy + 76 * k, hint);
             }
+        }
+
+        private boolean fromCard;
+
+        /** The main list's row `row`, as OK on it opens it; Back from there leaves (see EXTRA_ROW). */
+        void openRow(int row) {
+            fromCard = true;
+            screen = MAIN;
+            focus = row;
+            activate();
+            invalidate();
         }
 
         private void activate() {

@@ -66,6 +66,8 @@ public class QuickPanelActivity extends Activity {
     static final String EXTRA_SIDEBAR = "io.freemytv.extra.SIDEBAR";
     /** The settings page (the sidebar's Settings): the same glass and tiles over the whole screen, four across. */
     static final String EXTRA_HUB = "io.freemytv.extra.HUB";
+    /** The settings page's second level: Free My TV's own settings as cards (for whoever looks after the TV). */
+    static final String EXTRA_ADMIN = "io.freemytv.extra.ADMIN";
     /** The sidebar's own rows, by key; the others are the home screen's top buttons and open as they do. */
     private static final String SIDE_PROFILE = "side:profile", SIDE_HOME = "side:home", SIDE_APPS = "side:apps",
             SIDE_STORE = "side:store";
@@ -123,7 +125,8 @@ public class QuickPanelActivity extends Activity {
         getWindow().setAttributes(lp);
         getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         overridePendingTransition(0, 0);   // the panel springs in by itself
-        view = new PanelView(this, k, hub ? hubTiles() : tiles(), inputs, side ? sidebar() : null, hub);
+        boolean admin = hub && getIntent().getBooleanExtra(EXTRA_ADMIN, false);
+        view = new PanelView(this, k, admin ? adminTiles() : hub ? hubTiles() : tiles(), inputs, side ? sidebar() : null, hub);
         setContentView(view);
     }
 
@@ -160,8 +163,29 @@ public class QuickPanelActivity extends Activity {
         }
         out[n++] = new Tile(Ui.tr("Screensaver"), "bedtime", 0xFF5E5CE6, new Intent(Settings.ACTION_DREAM_SETTINGS));
         out[n++] = new Tile(Ui.tr("All settings"), "settings", 0xFF8E8E9A, new Intent(Settings.ACTION_SETTINGS));
-        out[n++] = new Tile("Free My TV", "sparkles", 0xFFFF375F, new Intent(this, SettingsActivity.class));
+        out[n++] = new Tile("Free My TV", ADMIN_SYMBOL, 0xFFFF375F);   // one level in (adminTiles), not an intent
         return java.util.Arrays.copyOf(out, n);
+    }
+
+    private static final String ADMIN_SYMBOL = "sparkles";
+
+    /** Free My TV's own settings, grouped as cards; each opens the settings straight at its screen (EXTRA_ROW). */
+    private Tile[] adminTiles() {
+        return new Tile[] {
+            new Tile(Ui.tr("Home Screen"), "home", 0xFF0A84FF, row(SettingsActivity.ROW_HOME)),
+            new Tile(Ui.tr("Home Settings"), "tv", 0xFF5E5CE6, row(SettingsActivity.ROW_HOME_SETTINGS)),
+            new Tile(Ui.tr("Profiles"), "person", 0xFFFF9F0A,
+                    new Intent(this, WhoActivity.class).putExtra(WhoActivity.EXTRA_MANAGE, true)),
+            new Tile(Ui.tr("Shelf"), "apps", 0xFF30D158, row(SettingsActivity.ROW_SHELF)),
+            new Tile(Ui.tr("Inputs"), "hdmi", 0xFF30B0C7, row(SettingsActivity.ROW_INPUTS)),
+            new Tile(Ui.tr("Remote Buttons"), "smart_button", 0xFF8E8E9A, row(SettingsActivity.ROW_REMOTE)),
+            new Tile(Ui.tr("Sleep Timer"), "bedtime", 0xFFBF5AF2, row(SettingsActivity.ROW_SLEEP)),
+            new Tile(Ui.tr("Screensaver"), "play", 0xFFFF375F, row(SettingsActivity.ROW_SAVER)),
+        };
+    }
+
+    private Intent row(int row) {
+        return new Intent(this, SettingsActivity.class).putExtra(SettingsActivity.EXTRA_ROW, row);
     }
 
     /**
@@ -343,7 +367,10 @@ public class QuickPanelActivity extends Activity {
             cols = hub ? 4 : 2;
             tileH = (hub ? 200 : TILE_H) * k;
             gridTop = hub ? 300 : GRID_TOP;
-            if (hub) status = status(c);
+            if (hub) {
+                status = status(c);
+                show.snap(1);   // the whole screen: there at once (a slide or a fade would redraw it all on every frame)
+            }
             inputsOnly = only != null;
             sideColors = new int[side == null ? 0 : side.size()];
             for (int i = 0; i < sideColors.length; i++) sideColors[i] = sideColor(side.get(i));
@@ -488,6 +515,10 @@ public class QuickPanelActivity extends Activity {
             closing = true;
             show.target = 0;
             invalidate();
+        }
+
+        private boolean admin() {
+            return getIntent().getBooleanExtra(EXTRA_ADMIN, false);
         }
 
         /** "Online · Wi-Fi", "Online · Ethernet" or "Offline": the connection, as Android judges it (validated). */
@@ -656,7 +687,8 @@ public class QuickPanelActivity extends Activity {
         /** The settings page: its name, large, and one quiet line of how the TV is connected. */
         private void drawHubHeader(Canvas c) {
             title.setTextSize(56 * k);
-            c.drawText(Ui.tr("Settings"), HUB_PAD * k - Ui.leftBearing(title, Ui.tr("Settings")), 170 * k, title);
+            String name = admin() ? "Free My TV" : Ui.tr("Settings");
+            c.drawText(name, HUB_PAD * k - Ui.leftBearing(title, name), 170 * k, title);
             title.setTextSize(30 * k);
             c.drawText(status, HUB_PAD * k, 222 * k, empty);
         }
@@ -893,6 +925,11 @@ public class QuickPanelActivity extends Activity {
             boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
             switch (code) {
                 case KeyEvent.KEYCODE_BACK:
+                    if (!down && admin() && !inputsOpen) {   // the cards: back to the settings page
+                        setIntent(new Intent(getContext(), QuickPanelActivity.class).putExtra(EXTRA_HUB, true));
+                        recreate();
+                        return true;
+                    }
                     if (!down) {
                         if (inputsOpen && !inputsOnly) {
                             inputsOpen = false;
@@ -973,7 +1010,12 @@ public class QuickPanelActivity extends Activity {
                 selectSide(side.get(sideFocus));
                 return;
             }
-            if (focus == INPUTS) {
+            if (hub && !admin() && ADMIN_SYMBOL.equals(tiles[focus].symbol)) {   // one level in, the same page
+                setIntent(new Intent(getContext(), QuickPanelActivity.class).putExtra(EXTRA_HUB, true).putExtra(EXTRA_ADMIN, true));
+                recreate();
+                return;
+            }
+            if (focus == INPUTS && !admin()) {
                 inputs = HomeApps.orderedInputs(getContext());
                 inputsOpen = true;
                 inputFocus = 0;
