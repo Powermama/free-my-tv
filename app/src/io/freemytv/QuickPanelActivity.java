@@ -50,11 +50,18 @@ public class QuickPanelActivity extends Activity {
         final int color;
         final Intent[] intents;
 
+        String hint;   // the settings page: one quiet line of what's inside
+
         Tile(String label, String symbol, int color, Intent... intents) {
             this.label = label;
             this.symbol = symbol;
             this.color = color;
             this.intents = intents;
+        }
+
+        Tile hint(String text) {
+            hint = text;
+            return this;
         }
     }
 
@@ -164,23 +171,40 @@ public class QuickPanelActivity extends Activity {
         out[n++] = new Tile(Ui.tr("Screensaver"), "bedtime", 0xFF5E5CE6, new Intent(Settings.ACTION_DREAM_SETTINGS));
         out[n++] = new Tile(Ui.tr("All settings"), "settings", 0xFF8E8E9A, new Intent(Settings.ACTION_SETTINGS));
         out[n++] = new Tile("Free My TV", ADMIN_SYMBOL, 0xFFFF375F);   // one level in (adminTiles), not an intent
+        for (int i = 0; i < n; i++) out[i].hint(hubHint(out[i].symbol));
         return java.util.Arrays.copyOf(out, n);
     }
 
     private static final String ADMIN_SYMBOL = "sparkles";
 
+    /** The settings page's tiles, by symbol: what each holds, in a few words. */
+    private static String hubHint(String symbol) {
+        switch (symbol) {
+            case "hdmi": return Ui.tr("HDMI and Live TV");
+            case "tv_settings": return Ui.tr("Picture mode, brightness");
+            case "speaker": return Ui.tr("Sound mode, output");
+            case "wifi": return Ui.tr("Wi-Fi and Ethernet");
+            case "bluetooth": return Ui.tr("Remotes, headphones");
+            case "accessibility": return Ui.tr("Captions, text, contrast");
+            case "bedtime": return Ui.tr("When it starts");
+            case "settings": return Ui.tr("The TV's full menu");
+            case ADMIN_SYMBOL: return Ui.tr("Home screen, profiles");
+            default: return null;
+        }
+    }
+
     /** Free My TV's own settings, grouped as cards; each opens the settings straight at its screen (EXTRA_ROW). */
     private Tile[] adminTiles() {
         return new Tile[] {
-            new Tile(Ui.tr("Home Screen"), "home", 0xFF0A84FF, row(SettingsActivity.ROW_HOME)),
-            new Tile(Ui.tr("Home Settings"), "tv", 0xFF5E5CE6, row(SettingsActivity.ROW_HOME_SETTINGS)),
+            new Tile(Ui.tr("Home Screen"), "home", 0xFF0A84FF, row(SettingsActivity.ROW_HOME)).hint(Ui.tr("Free My TV or the original")),
+            new Tile(Ui.tr("Home Settings"), "tv", 0xFF5E5CE6, row(SettingsActivity.ROW_HOME_SETTINGS)).hint(Ui.tr("Language, look, picks")),
             new Tile(Ui.tr("Profiles"), "person", 0xFFFF9F0A,
-                    new Intent(this, WhoActivity.class).putExtra(WhoActivity.EXTRA_MANAGE, true)),
-            new Tile(Ui.tr("Shelf"), "apps", 0xFF30D158, row(SettingsActivity.ROW_SHELF)),
-            new Tile(Ui.tr("Inputs"), "hdmi", 0xFF30B0C7, row(SettingsActivity.ROW_INPUTS)),
-            new Tile(Ui.tr("Remote Buttons"), "smart_button", 0xFF8E8E9A, row(SettingsActivity.ROW_REMOTE)),
-            new Tile(Ui.tr("Sleep Timer"), "bedtime", 0xFFBF5AF2, row(SettingsActivity.ROW_SLEEP)),
-            new Tile(Ui.tr("Screensaver"), "play", 0xFFFF375F, row(SettingsActivity.ROW_SAVER)),
+                    new Intent(this, WhoActivity.class).putExtra(WhoActivity.EXTRA_MANAGE, true)).hint(Ui.tr("Names and avatars")),
+            new Tile(Ui.tr("Shelf"), "apps", 0xFF30D158, row(SettingsActivity.ROW_SHELF)).hint(Ui.tr("Apps and their order")),
+            new Tile(Ui.tr("Inputs"), "hdmi", 0xFF30B0C7, row(SettingsActivity.ROW_INPUTS)).hint(Ui.tr("Names and order")),
+            new Tile(Ui.tr("Remote Buttons"), "smart_button", 0xFF8E8E9A, row(SettingsActivity.ROW_REMOTE)).hint(Ui.tr("What the app buttons open")),
+            new Tile(Ui.tr("Sleep Timer"), "bedtime", 0xFFBF5AF2, row(SettingsActivity.ROW_SLEEP)).hint(Ui.tr("Bedtime and turning off")),
+            new Tile(Ui.tr("Screensaver"), "play", 0xFFFF375F, row(SettingsActivity.ROW_SAVER)).hint(Ui.tr("See it now")),
         };
     }
 
@@ -327,7 +351,7 @@ public class QuickPanelActivity extends Activity {
         private float clockBearing;
         private final Spoken spoken;
 
-        private final Paint date, clock, label, rowLabel, title, empty;
+        private final Paint date, clock, label, rowLabel, title, empty, hintPaint;
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), rim = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint layer = new Paint(), atop = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF rect = new RectF(), card = new RectF();
@@ -398,6 +422,7 @@ public class QuickPanelActivity extends Activity {
             rowLabel = Ui.text(Ui.semibold, 26 * k, ink);
             title = Ui.text(Ui.semibold, 30 * k, ink);
             empty = Ui.text(Ui.medium, 24 * k, Ui.alpha(ink, 0.7f));
+            hintPaint = Ui.text(Ui.medium, 22 * k, 0xFF8E8E93);
             rim.setStyle(Paint.Style.STROKE);
             setFocusable(true);
             spoken = new Spoken(this, new Spoken.Source() {
@@ -704,6 +729,10 @@ public class QuickPanelActivity extends Activity {
 
         /** The grid: glass tiles, the lens under the focused one, then each tile's colored chip and label. */
         private void drawTiles(Canvas c, float a) {
+            if (hub) {
+                drawHubTiles(c, a);
+                return;
+            }
             int saved = c.saveLayerAlpha(card, Math.round(255 * a));
             c.translate(0, (1 - a) * -24 * k);
             float r = TILE_R * k;
@@ -725,6 +754,39 @@ public class QuickPanelActivity extends Activity {
                 label.setColor(mix(ink, focusInk, on));
                 label.setTextSize(labelSize[i]);
                 c.drawText(tiles[i].label, tileX[i] + 22 * k, tileY[i] + tileH - 24 * k, label);
+                c.restore();
+            }
+            c.restoreToCount(saved);
+        }
+
+        /**
+         * The settings page's tiles, in the quiet way of a modern app's settings (Linear, Vercel): a dark card with a
+         * hairline border, a white line icon, its name and one grey line of what's inside. The focused one lightens,
+         * takes a white border and lifts a little; no colour but what means something.
+         */
+        private void drawHubTiles(Canvas c, float a) {
+            int saved = a < 0.999f ? c.saveLayerAlpha(card, Math.round(255 * a)) : c.save();
+            float r = 22 * k;
+            for (int i = 0; i < tiles.length; i++) {
+                float on = nearness(tileX[i], tileY[i], tileW), lift = on * (1 - 0.03f * press.value);
+                rect.set(tileX[i], tileY[i], tileX[i] + tileW, tileY[i] + tileH);
+                c.save();
+                c.scale(1 + 0.025f * lift, 1 + 0.025f * lift, rect.centerX(), rect.centerY());
+                fill.setShader(null);
+                fill.setColor(mix(0xFF161618, 0xFF222226, on));
+                c.drawRoundRect(rect, r, r, fill);
+                rim.setShader(null);
+                rim.setColor(mix(0xFF2A2A2E, 0xFFF5F5F7, on));
+                rim.setStrokeWidth((1.2f + 1.3f * on) * k);
+                c.drawRoundRect(rect, r, r, rim);
+                float icon = 34 * k, ix = rect.left + 30 * k, iy = rect.top + 30 * k;
+                Symbols.draw(getContext(), c, tiles[i].symbol, ix + icon / 2, iy + icon / 2,
+                        Symbols.pointSizeForHeight(getContext(), tiles[i].symbol, icon), mix(0x99F5F5F7, 0xFFF5F5F7, on));
+                boolean hinted = tiles[i].hint != null;
+                label.setColor(0xFFF5F5F7);
+                label.setTextSize(labelSize[i]);
+                c.drawText(tiles[i].label, rect.left + 30 * k, rect.bottom - (hinted ? 62 : 30) * k, label);
+                if (hinted) c.drawText(tiles[i].hint, rect.left + 30 * k, rect.bottom - 28 * k, hintPaint);
                 c.restore();
             }
             c.restoreToCount(saved);
